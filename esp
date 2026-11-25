@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v3.6  (High FPS + Optimized Raycasts)
+--//   NEXUS ESP v3.7  (Players + Objects)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -11,6 +11,7 @@ local LP         = Players.LocalPlayer
 local Camera     = workspace.CurrentCamera
 
 local cfg = {
+    -- Player ESP
     Enabled            = true,
     BoxStyle           = "Full",
     BoxTransparency    = 20,
@@ -33,6 +34,14 @@ local cfg = {
     Chams              = false,
     ChamsTransparency  = 70,
     ChamsThroughWalls  = true,
+
+    -- Object ESP
+    ObjectESP          = true,
+    ShowLandmines      = true,
+    ShowRemotes        = true,
+    ObjectMaxDist      = 2000,
+    ObjectTextSize     = 13,
+
     MenuKey            = Enum.KeyCode.RightShift,
 }
 
@@ -41,7 +50,7 @@ do
     env.NEXUS_ESP = cfg
 end
 
---═════════════════ ESP CORE ═════════════════
+--═════════════════ SHARED ═════════════════
 local HAS_DRAWING = type(Drawing) == "table" and type(Drawing.new) == "function"
 local FONT = 2
 if HAS_DRAWING then pcall(function() FONT = Drawing.Fonts.Plex end) end
@@ -66,9 +75,8 @@ local function alpha(t)
     return math.clamp(1 - t * 0.01, 0, 1)
 end
 
+--═════════════════ PLAYER ESP ═════════════════
 local espStore = {}
-
--- Optimized Raycast system
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.RespectCanCollide = false
@@ -76,34 +84,17 @@ rayParams.RespectCanCollide = false
 local VIS_INTERVAL = 0.35
 
 local function isVisible(char, s)
-    if not cfg.UseVisibility then
-        return true
-    end
-
+    if not cfg.UseVisibility then return true end
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp or not Camera then
-        return true
-    end
-
+    if not hrp or not Camera then return true end
     local dist = (Camera.CFrame.Position - hrp.Position).Magnitude
-
-    -- Skip raycast when very close or very far
-    if dist < 25 then
-        return true
-    end
-    if dist > cfg.MaxDistance * 0.9 then
-        return false
-    end
-
-    -- Use cached result
+    if dist < 25 then return true end
+    if dist > cfg.MaxDistance * 0.9 then return false end
     if s.lastVisTime and (os.clock() - s.lastVisTime) < VIS_INTERVAL then
         return s.lastVis
     end
-
-    -- Actual raycast
     rayParams.FilterDescendantsInstances = {LP.Character, char}
     local result = workspace:Raycast(Camera.CFrame.Position, hrp.Position - Camera.CFrame.Position, rayParams)
-
     s.lastVis = (result == nil)
     s.lastVisTime = os.clock()
     return s.lastVis
@@ -121,15 +112,9 @@ end
 
 local function buildState(plr)
     local s = {
-        lastName = "",
-        lastHp = -1,
-        lastDist = -1,
-        lastTool = "",
-        lastVis = true,
-        lastVisTime = 0,
-        corner = {},
+        lastName = "", lastHp = -1, lastDist = -1, lastTool = "",
+        lastVis = true, lastVisTime = 0, corner = {},
     }
-
     s.box    = newDraw("Square", {Filled = false, Visible = false, Thickness = 1.2})
     s.hpBack = newDraw("Square", {Filled = true, Color = Color3.fromRGB(12, 12, 14), Visible = false})
     s.hpFill = newDraw("Square", {Filled = true, Visible = false})
@@ -138,12 +123,10 @@ local function buildState(plr)
     s.dist   = newDraw("Text", {Center = true, Outline = true, Visible = false, Font = FONT, Size = 11})
     s.tool   = newDraw("Text", {Center = true, Outline = true, Visible = false, Font = FONT, Size = 11})
     s.tracer = newDraw("Line", {Visible = false})
-
-    s.chams = Instance.new("Highlight")
+    s.chams  = Instance.new("Highlight")
     s.chams.Name = "_nexus_chams"
     s.chams.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     s.chams.Enabled = false
-
     espStore[plr] = s
     return s
 end
@@ -174,14 +157,9 @@ end
 local function destroyState(plr)
     local s = espStore[plr]
     if not s then return end
-    killDraw(s.box)
-    killDraw(s.hpBack)
-    killDraw(s.hpFill)
-    killDraw(s.name)
-    killDraw(s.hpTxt)
-    killDraw(s.dist)
-    killDraw(s.tool)
-    killDraw(s.tracer)
+    killDraw(s.box) killDraw(s.hpBack) killDraw(s.hpFill)
+    killDraw(s.name) killDraw(s.hpTxt) killDraw(s.dist)
+    killDraw(s.tool) killDraw(s.tracer)
     for i = 1, #s.corner do killDraw(s.corner[i]) end
     pcall(function() s.chams:Destroy() end)
     espStore[plr] = nil
@@ -212,10 +190,80 @@ local function drawCorners(x, y, w, h, len, col, a, th, s)
     end
 end
 
--- Main loop
+--═════════════════ OBJECT ESP ═════════════════
+local objStore = {}
+local objects = {}
+
+local TARGETS = {
+    ["Landmine"] = "mine",
+    ["Remote explosive"] = "remote",
+    ["Remote Explosive"] = "remote",
+    ["C4"] = "remote",
+    ["Bomb"] = "remote",
+}
+
+local function getPart(obj)
+    if obj:IsA("BasePart") then return obj end
+    return obj:FindFirstChild("Handle")
+        or obj:FindFirstChild("Bomb")
+        or obj:FindFirstChild("Landmine")
+        or obj:FindFirstChildWhichIsA("BasePart")
+end
+
+local function buildObj(obj)
+    local s = {
+        box  = newDraw("Square", {Filled = false, Thickness = 1.3, Visible = false}),
+        name = newDraw("Text", {Center = true, Outline = true, Size = cfg.ObjectTextSize, Font = FONT, Visible = false}),
+        dist = newDraw("Text", {Center = true, Outline = true, Size = cfg.ObjectTextSize - 2, Font = FONT, Visible = false}),
+    }
+    objStore[obj] = s
+    return s
+end
+
+local function hideObj(s)
+    if not s then return end
+    s.box.Visible = false
+    s.name.Visible = false
+    s.dist.Visible = false
+end
+
+local function destroyObj(obj)
+    local s = objStore[obj]
+    if not s then return end
+    killDraw(s.box) killDraw(s.name) killDraw(s.dist)
+    objStore[obj] = nil
+end
+
+local function refreshObjects()
+    local found = {}
+    local function check(obj)
+        local kind = TARGETS[obj.Name]
+        if kind then
+            local part = getPart(obj)
+            if part then
+                found[obj] = {part = part, kind = kind}
+            end
+        end
+    end
+
+    for _, obj in ipairs(workspace:GetChildren()) do
+        check(obj)
+        for _, child in ipairs(obj:GetChildren()) do
+            check(child)
+        end
+    end
+
+    for obj in pairs(objStore) do
+        if not found[obj] then destroyObj(obj) end
+    end
+    objects = found
+end
+
+--═════════════════ MAIN LOOP ═════════════════
 local playerCache = {}
 local cacheTimer = 0
 local updateTimer = 0
+local objScanTimer = 0
 local TARGET_HZ = 40
 
 local connection = RunService.Heartbeat:Connect(function(dt)
@@ -224,221 +272,257 @@ local connection = RunService.Heartbeat:Connect(function(dt)
         if not Camera then return end
     end
 
+    -- Player list cache
     cacheTimer = cacheTimer + dt
     if cacheTimer >= 0.2 then
         cacheTimer = 0
         playerCache = Players:GetPlayers()
     end
 
+    -- Object scan (very light)
+    objScanTimer = objScanTimer + dt
+    if objScanTimer >= 0.8 then
+        objScanTimer = 0
+        if cfg.ObjectESP then
+            refreshObjects()
+        end
+    end
+
     updateTimer = updateTimer + dt
     if updateTimer < (1 / TARGET_HZ) then return end
     updateTimer = 0
 
-    if not cfg.Enabled then
-        for _, s in pairs(espStore) do hide(s) end
-        return
-    end
-
+    local camPos = Camera.CFrame.Position
     local myChar = LP.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local camPos = Camera.CFrame.Position
     local vp = Camera.ViewportSize
     local a = alpha(cfg.BoxTransparency)
     local tA = alpha(cfg.TextTransparency)
 
-    for i = 1, #playerCache do
-        local plr = playerCache[i]
-        if plr == LP then continue end
+    --===== PLAYER ESP =====
+    if cfg.Enabled then
+        for i = 1, #playerCache do
+            local plr = playerCache[i]
+            if plr == LP then continue end
 
-        local s = espStore[plr] or buildState(plr)
-        local char = plr.Character
-        if not char then hide(s) continue end
+            local s = espStore[plr] or buildState(plr)
+            local char = plr.Character
+            if not char then hide(s) continue end
 
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hum or not hrp or hum.Health <= 0 or not char.Parent then
-            hide(s)
-            continue
-        end
-
-        if cfg.TeamCheck and LP.Team and plr.Team == LP.Team then
-            hide(s)
-            continue
-        end
-
-        local dist = myHrp and (myHrp.Position - hrp.Position).Magnitude or (camPos - hrp.Position).Magnitude
-        if dist > cfg.MaxDistance then
-            hide(s)
-            continue
-        end
-
-        local rootSP, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-        if rootSP.Z < 1 or not onScreen then
-            hide(s)
-            continue
-        end
-
-        local vis = isVisible(char, s)
-        local col = colorFor(plr, vis)
-
-        local head = char:FindFirstChild("Head") or hrp
-        local headSP = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.4, 0))
-        local feetSP = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.8, 0))
-
-        local scale = 200 / rootSP.Z
-        local bw = math.clamp(36 * scale, 6, 80)
-        local bh = math.clamp(58 * scale, 12, 130)
-        local bx = rootSP.X - bw * 0.5
-        local by = rootSP.Y - bh * 0.55
-
-        -- Chams
-        if cfg.Chams then
-            local chA = alpha(cfg.ChamsTransparency)
-            if s.chams.Parent ~= char then s.chams.Parent = char end
-            s.chams.Adornee = char
-            s.chams.FillColor = col
-            s.chams.OutlineColor = col
-            s.chams.FillTransparency = chA
-            s.chams.OutlineTransparency = math.max(chA - 0.3, 0)
-            s.chams.Enabled = true
-        else
-            s.chams.Enabled = false
-        end
-
-        if not HAS_DRAWING then continue end
-
-        -- Box
-        if cfg.BoxStyle == "Full" then
-            s.box.Size = Vector2.new(bw, bh)
-            s.box.Position = Vector2.new(bx, by)
-            s.box.Color = col
-            s.box.Thickness = cfg.BoxThickness
-            s.box.Transparency = a
-            s.box.Visible = true
-            for i = 1, #s.corner do
-                if s.corner[i] then s.corner[i].Visible = false end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hum or not hrp or hum.Health <= 0 or not char.Parent then
+                hide(s) continue
             end
-        elseif cfg.BoxStyle == "Corner" then
-            local len = math.clamp(math.max(bw, bh) * 0.2, 3, 11)
-            drawCorners(bx, by, bw, bh, len, col, a, cfg.BoxThickness, s)
-            s.box.Visible = false
-        else
-            s.box.Visible = false
-            for i = 1, #s.corner do
-                if s.corner[i] then s.corner[i].Visible = false end
+
+            if cfg.TeamCheck and LP.Team and plr.Team == LP.Team then
+                hide(s) continue
             end
-        end
 
-        -- Health bar
-        if cfg.ShowHealth then
-            local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-            local barW = 3
-            local barX = bx - barW - 2
-            s.hpBack.Size = Vector2.new(barW, bh)
-            s.hpBack.Position = Vector2.new(barX, by)
-            s.hpBack.Transparency = math.min(a + 0.3, 1)
-            s.hpBack.Visible = true
-            s.hpFill.Size = Vector2.new(barW, bh * frac)
-            s.hpFill.Position = Vector2.new(barX, by + bh * (1 - frac))
-            s.hpFill.Color = Color3.fromHSV(0.33 * frac, 0.85, 1)
-            s.hpFill.Transparency = a
-            s.hpFill.Visible = true
-        else
-            s.hpBack.Visible = false
-            s.hpFill.Visible = false
-        end
+            local dist = myHrp and (myHrp.Position - hrp.Position).Magnitude or (camPos - hrp.Position).Magnitude
+            if dist > cfg.MaxDistance then hide(s) continue end
 
-        -- Name
-        if cfg.ShowName and headSP.Z > 0 then
-            local nameStr = plr.DisplayName
-            if s.lastName ~= nameStr then
-                s.name.Text = nameStr
-                s.lastName = nameStr
+            local rootSP, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if rootSP.Z < 1 or not onScreen then hide(s) continue end
+
+            local vis = isVisible(char, s)
+            local col = colorFor(plr, vis)
+
+            local head = char:FindFirstChild("Head") or hrp
+            local headSP = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.4, 0))
+            local feetSP = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.8, 0))
+
+            local scale = 200 / rootSP.Z
+            local bw = math.clamp(36 * scale, 6, 80)
+            local bh = math.clamp(58 * scale, 12, 130)
+            local bx = rootSP.X - bw * 0.5
+            local by = rootSP.Y - bh * 0.55
+
+            if cfg.Chams then
+                local chA = alpha(cfg.ChamsTransparency)
+                if s.chams.Parent ~= char then s.chams.Parent = char end
+                s.chams.Adornee = char
+                s.chams.FillColor = col
+                s.chams.OutlineColor = col
+                s.chams.FillTransparency = chA
+                s.chams.OutlineTransparency = math.max(chA - 0.3, 0)
+                s.chams.Enabled = true
+            else
+                s.chams.Enabled = false
             end
-            s.name.Position = Vector2.new(headSP.X, headSP.Y - cfg.TextSize - 2)
-            s.name.Size = cfg.TextSize
-            s.name.Color = col
-            s.name.Transparency = tA
-            s.name.Visible = true
-        else
-            s.name.Visible = false
-        end
 
-        -- Health text
-        if cfg.ShowHealthText and headSP.Z > 0 then
-            local hp = math.floor(hum.Health + 0.5)
-            if s.lastHp ~= hp then
-                s.hpTxt.Text = hp .. " hp"
-                s.lastHp = hp
+            if not HAS_DRAWING then continue end
+
+            if cfg.BoxStyle == "Full" then
+                s.box.Size = Vector2.new(bw, bh)
+                s.box.Position = Vector2.new(bx, by)
+                s.box.Color = col
+                s.box.Thickness = cfg.BoxThickness
+                s.box.Transparency = a
+                s.box.Visible = true
+                for i = 1, #s.corner do if s.corner[i] then s.corner[i].Visible = false end end
+            elseif cfg.BoxStyle == "Corner" then
+                local len = math.clamp(math.max(bw, bh) * 0.2, 3, 11)
+                drawCorners(bx, by, bw, bh, len, col, a, cfg.BoxThickness, s)
+                s.box.Visible = false
+            else
+                s.box.Visible = false
+                for i = 1, #s.corner do if s.corner[i] then s.corner[i].Visible = false end end
             end
-            local frac = hum.Health / math.max(hum.MaxHealth, 1)
-            s.hpTxt.Position = Vector2.new(headSP.X, headSP.Y)
-            s.hpTxt.Size = cfg.TextSize - 2
-            s.hpTxt.Color = Color3.fromHSV(0.33 * frac, 0.8, 1)
-            s.hpTxt.Transparency = tA
-            s.hpTxt.Visible = true
-        else
-            s.hpTxt.Visible = false
-        end
 
-        -- Distance
-        if cfg.ShowDistance and feetSP.Z > 0 then
-            local d = math.floor(dist)
-            if s.lastDist ~= d then
-                s.dist.Text = d .. "m"
-                s.lastDist = d
+            if cfg.ShowHealth then
+                local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                local barW = 3
+                local barX = bx - barW - 2
+                s.hpBack.Size = Vector2.new(barW, bh)
+                s.hpBack.Position = Vector2.new(barX, by)
+                s.hpBack.Transparency = math.min(a + 0.3, 1)
+                s.hpBack.Visible = true
+                s.hpFill.Size = Vector2.new(barW, bh * frac)
+                s.hpFill.Position = Vector2.new(barX, by + bh * (1 - frac))
+                s.hpFill.Color = Color3.fromHSV(0.33 * frac, 0.85, 1)
+                s.hpFill.Transparency = a
+                s.hpFill.Visible = true
+            else
+                s.hpBack.Visible = false
+                s.hpFill.Visible = false
             end
-            s.dist.Position = Vector2.new(feetSP.X, feetSP.Y + 1)
-            s.dist.Size = cfg.TextSize - 2
-            s.dist.Color = Color3.fromRGB(180, 180, 195)
-            s.dist.Transparency = tA
-            s.dist.Visible = true
-        else
-            s.dist.Visible = false
-        end
 
-        -- Tool
-        if cfg.ShowTool and feetSP.Z > 0 then
-            local tool = char:FindFirstChildOfClass("Tool")
-            if tool then
-                local tn = tool.Name
-                if s.lastTool ~= tn then
-                    s.tool.Text = "[" .. tn .. "]"
-                    s.lastTool = tn
+            if cfg.ShowName and headSP.Z > 0 then
+                local nameStr = plr.DisplayName
+                if s.lastName ~= nameStr then s.name.Text = nameStr s.lastName = nameStr end
+                s.name.Position = Vector2.new(headSP.X, headSP.Y - cfg.TextSize - 2)
+                s.name.Size = cfg.TextSize
+                s.name.Color = col
+                s.name.Transparency = tA
+                s.name.Visible = true
+            else
+                s.name.Visible = false
+            end
+
+            if cfg.ShowHealthText and headSP.Z > 0 then
+                local hp = math.floor(hum.Health + 0.5)
+                if s.lastHp ~= hp then s.hpTxt.Text = hp .. " hp" s.lastHp = hp end
+                local frac = hum.Health / math.max(hum.MaxHealth, 1)
+                s.hpTxt.Position = Vector2.new(headSP.X, headSP.Y)
+                s.hpTxt.Size = cfg.TextSize - 2
+                s.hpTxt.Color = Color3.fromHSV(0.33 * frac, 0.8, 1)
+                s.hpTxt.Transparency = tA
+                s.hpTxt.Visible = true
+            else
+                s.hpTxt.Visible = false
+            end
+
+            if cfg.ShowDistance and feetSP.Z > 0 then
+                local d = math.floor(dist)
+                if s.lastDist ~= d then s.dist.Text = d .. "m" s.lastDist = d end
+                s.dist.Position = Vector2.new(feetSP.X, feetSP.Y + 1)
+                s.dist.Size = cfg.TextSize - 2
+                s.dist.Color = Color3.fromRGB(180, 180, 195)
+                s.dist.Transparency = tA
+                s.dist.Visible = true
+            else
+                s.dist.Visible = false
+            end
+
+            if cfg.ShowTool and feetSP.Z > 0 then
+                local tool = char:FindFirstChildOfClass("Tool")
+                if tool then
+                    local tn = tool.Name
+                    if s.lastTool ~= tn then s.tool.Text = "[" .. tn .. "]" s.lastTool = tn end
+                    s.tool.Position = Vector2.new(feetSP.X, feetSP.Y + (cfg.ShowDistance and 14 or 1))
+                    s.tool.Size = cfg.TextSize - 2
+                    s.tool.Color = Color3.fromRGB(255, 210, 120)
+                    s.tool.Transparency = tA
+                    s.tool.Visible = true
+                else
+                    s.tool.Visible = false
+                    s.lastTool = ""
                 end
-                s.tool.Position = Vector2.new(feetSP.X, feetSP.Y + (cfg.ShowDistance and 14 or 1))
-                s.tool.Size = cfg.TextSize - 2
-                s.tool.Color = Color3.fromRGB(255, 210, 120)
-                s.tool.Transparency = tA
-                s.tool.Visible = true
             else
                 s.tool.Visible = false
-                s.lastTool = ""
             end
-        else
-            s.tool.Visible = false
-        end
 
-        -- Tracer
-        if cfg.TracerStyle ~= "Off" then
-            local from
-            if cfg.TracerStyle == "Bottom" then
-                from = Vector2.new(vp.X * 0.5, vp.Y)
-            elseif cfg.TracerStyle == "Top" then
-                from = Vector2.new(vp.X * 0.5, 0)
+            if cfg.TracerStyle ~= "Off" then
+                local from
+                if cfg.TracerStyle == "Bottom" then
+                    from = Vector2.new(vp.X * 0.5, vp.Y)
+                elseif cfg.TracerStyle == "Top" then
+                    from = Vector2.new(vp.X * 0.5, 0)
+                else
+                    local m = UIS:GetMouseLocation()
+                    from = Vector2.new(m.X, m.Y)
+                end
+                s.tracer.From = from
+                s.tracer.To = Vector2.new(rootSP.X, rootSP.Y)
+                s.tracer.Color = col
+                s.tracer.Thickness = cfg.TracerThickness
+                s.tracer.Transparency = alpha(cfg.TracerTransparency)
+                s.tracer.Visible = true
             else
-                local m = UIS:GetMouseLocation()
-                from = Vector2.new(m.X, m.Y)
+                s.tracer.Visible = false
             end
-            s.tracer.From = from
-            s.tracer.To = Vector2.new(rootSP.X, rootSP.Y)
-            s.tracer.Color = col
-            s.tracer.Thickness = cfg.TracerThickness
-            s.tracer.Transparency = alpha(cfg.TracerTransparency)
-            s.tracer.Visible = true
-        else
-            s.tracer.Visible = false
         end
+    else
+        for _, s in pairs(espStore) do hide(s) end
+    end
+
+    --===== OBJECT ESP =====
+    if cfg.ObjectESP and HAS_DRAWING then
+        for obj, data in pairs(objects) do
+            local part = data.part
+            if not part or not part.Parent then
+                destroyObj(obj)
+                continue
+            end
+
+            local show = (data.kind == "mine" and cfg.ShowLandmines) or (data.kind == "remote" and cfg.ShowRemotes)
+            if not show then
+                hideObj(objStore[obj])
+                continue
+            end
+
+            local s = objStore[obj] or buildObj(obj)
+            local pos = part.Position
+            local dist = myHrp and (myHrp.Position - pos).Magnitude or (camPos - pos).Magnitude
+
+            if dist > cfg.ObjectMaxDist then
+                hideObj(s)
+                continue
+            end
+
+            local sp, onScreen = Camera:WorldToViewportPoint(pos)
+            if sp.Z < 1 or not onScreen then
+                hideObj(s)
+                continue
+            end
+
+            local scale = 180 / sp.Z
+            local size = math.clamp(28 * scale, 8, 55)
+            local x = sp.X - size * 0.5
+            local y = sp.Y - size * 0.5
+
+            local col = data.kind == "mine" and Color3.fromRGB(255, 70, 70) or Color3.fromRGB(255, 170, 40)
+
+            s.box.Size = Vector2.new(size, size)
+            s.box.Position = Vector2.new(x, y)
+            s.box.Color = col
+            s.box.Visible = true
+
+            s.name.Text = obj.Name
+            s.name.Position = Vector2.new(sp.X, y - cfg.ObjectTextSize - 2)
+            s.name.Size = cfg.ObjectTextSize
+            s.name.Color = col
+            s.name.Visible = true
+
+            s.dist.Text = math.floor(dist) .. "m"
+            s.dist.Position = Vector2.new(sp.X, y + size + 2)
+            s.dist.Size = cfg.ObjectTextSize - 2
+            s.dist.Color = Color3.fromRGB(200, 200, 210)
+            s.dist.Visible = true
+        end
+    else
+        for _, s in pairs(objStore) do hideObj(s) end
     end
 end)
 
@@ -498,8 +582,8 @@ local function hoverEffect(btn, base, hov)
 end
 
 local win = Instance.new("Frame")
-win.Size = UDim2.new(0, 320, 0, 470)
-win.Position = UDim2.new(0.5, -160, 0.5, -235)
+win.Size = UDim2.new(0, 320, 0, 510)
+win.Position = UDim2.new(0.5, -160, 0.5, -255)
 win.BackgroundColor3 = T.BG
 win.BorderSizePixel = 0
 win.Active = true
@@ -605,7 +689,7 @@ end
 
 local function makeTab(name)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 92, 1, 0)
+    btn.Size = UDim2.new(0, 70, 1, 0)
     btn.BackgroundColor3 = T.Card
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 12
@@ -977,12 +1061,14 @@ do
     end)
 end
 
--- Build menu
-local mainTab = makeTab("Main")
+-- Build tabs
+local mainTab   = makeTab("Main")
 local visualTab = makeTab("Visual")
-local miscTab = makeTab("Misc")
+local objTab    = makeTab("Objects")
+local miscTab   = makeTab("Misc")
 
-local secMain = makeSection(mainTab, "ESP")
+-- MAIN
+local secMain = makeSection(mainTab, "Player ESP")
 makeToggle(secMain, "Enabled", "master switch", cfg.Enabled, function(v) cfg.Enabled = v end)
 makeDropdown(secMain, "Box Style", {"Full", "Corner", "Off"}, cfg.BoxStyle, function(v) cfg.BoxStyle = v end)
 makeDropdown(secMain, "Color", {"Team", "Custom"}, cfg.ColorMode, function(v) cfg.ColorMode = v end)
@@ -995,6 +1081,7 @@ local secCh = makeSection(mainTab, "Chams")
 makeToggle(secCh, "Chams", "3D glow", cfg.Chams, function(v) cfg.Chams = v end)
 makeSlider(secCh, "Chams Opacity", 0, 100, cfg.ChamsTransparency, 0, "%", function(v) cfg.ChamsTransparency = v end)
 
+-- VISUAL
 local secBox = makeSection(visualTab, "Box")
 makeSlider(secBox, "Transparency", 0, 100, cfg.BoxTransparency, 0, "%", function(v) cfg.BoxTransparency = v end)
 makeSlider(secBox, "Thickness", 1, 4, cfg.BoxThickness, 1, "px", function(v) cfg.BoxThickness = v end)
@@ -1008,6 +1095,14 @@ makeToggle(secTxt, "Tool", "equipped item", cfg.ShowTool, function(v) cfg.ShowTo
 makeSlider(secTxt, "Text Size", 10, 22, cfg.TextSize, 0, "px", function(v) cfg.TextSize = v end)
 makeSlider(secTxt, "Text Opacity", 0, 100, cfg.TextTransparency, 0, "%", function(v) cfg.TextTransparency = v end)
 
+-- OBJECTS TAB
+local secObj = makeSection(objTab, "Object ESP")
+makeToggle(secObj, "Enabled", "show landmines & remotes", cfg.ObjectESP, function(v) cfg.ObjectESP = v end)
+makeToggle(secObj, "Landmines", "red boxes", cfg.ShowLandmines, function(v) cfg.ShowLandmines = v end)
+makeToggle(secObj, "Remote Explosives", "orange boxes", cfg.ShowRemotes, function(v) cfg.ShowRemotes = v end)
+makeSlider(secObj, "Max Distance", 50, 5000, cfg.ObjectMaxDist, 0, "", function(v) cfg.ObjectMaxDist = v end)
+
+-- MISC
 local secFl = makeSection(miscTab, "Filters")
 makeToggle(secFl, "Team Check", "hide teammates", cfg.TeamCheck, function(v) cfg.TeamCheck = v end)
 makeToggle(secFl, "Visibility Check", "red behind walls (costs FPS)", cfg.UseVisibility, function(v) cfg.UseVisibility = v end)
@@ -1046,6 +1141,7 @@ hoverEffect(unloadBtn, Color3.fromRGB(60, 24, 30), Color3.fromRGB(90, 30, 40))
 unloadBtn.MouseButton1Click:Connect(function()
     if connection then connection:Disconnect() end
     for plr in pairs(espStore) do destroyState(plr) end
+    for obj in pairs(objStore) do destroyObj(obj) end
     gui:Destroy()
 end)
 
@@ -1068,7 +1164,7 @@ local function showMenu()
     dot.BackgroundColor3 = Color3.fromRGB(80, 250, 140)
     win.Size = UDim2.new(0, 320, 0, 0)
     TweenSvc:Create(win, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 320, 0, 470)
+        Size = UDim2.new(0, 320, 0, 510)
     }):Play()
 end
 
@@ -1126,4 +1222,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v3.6 | High FPS + Optimized Raycasts | Target 40Hz")
+print("[NEXUS] v3.7 | Players + Landmines + Remote Explosives")
