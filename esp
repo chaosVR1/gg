@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v3.8  (Players + Fixed Object ESP)
+--//   NEXUS ESP v3.9  (Players + Objects + Spiked Club)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -40,6 +40,11 @@ local cfg = {
     ShowRemotes        = true,
     ObjectMaxDist      = 2000,
 
+    -- Spiked Club
+    ClubReachEnabled   = true,
+    ClubReachMult      = 3,
+    ClubCooldown       = 0.3,
+
     MenuKey            = Enum.KeyCode.RightShift,
 }
 
@@ -72,6 +77,79 @@ end
 local function alpha(t)
     return math.clamp(1 - t * 0.01, 0, 1)
 end
+
+--═════════════════ SPIKED CLUB MOD ═════════════════
+local function getSpikedClub()
+    local char = LP.Character
+    if char then
+        local t = char:FindFirstChild("Spiked club")
+        if t then return t end
+    end
+    local bp = LP:FindFirstChild("Backpack")
+    if bp then
+        return bp:FindFirstChild("Spiked club")
+    end
+    return nil
+end
+
+local function applyClubMods()
+    local tool = getSpikedClub()
+    if not tool then return end
+
+    -- Cooldown
+    local cd = tool:FindFirstChild("Cooldowntime")
+    if cd and cd:IsA("NumberValue") then
+        cd.Value = cfg.ClubCooldown
+    end
+
+    if not cfg.ClubReachEnabled then return end
+
+    -- Reach via NumberValues
+    for _, name in ipairs({"Reach", "Range", "HitRange", "AttackRange", "Distance", "Size"}) do
+        local v = tool:FindFirstChild(name)
+        if v and v:IsA("NumberValue") then
+            if not v:GetAttribute("Original") then
+                v:SetAttribute("Original", v.Value)
+            end
+            v.Value = v:GetAttribute("Original") * cfg.ClubReachMult
+        end
+    end
+
+    -- Handle size method
+    local handle = tool:FindFirstChild("Handle")
+    if handle and handle:IsA("BasePart") then
+        if not handle:GetAttribute("OriginalSize") then
+            handle:SetAttribute("OriginalSize", handle.Size)
+        end
+        local original = handle:GetAttribute("OriginalSize")
+        handle.Size = original * Vector3.new(cfg.ClubReachMult, 1, cfg.ClubReachMult)
+    end
+
+    -- Deep search
+    for _, obj in ipairs(tool:GetDescendants()) do
+        if obj:IsA("NumberValue") and (obj.Name:lower():find("reach") or obj.Name:lower():find("range")) then
+            if not obj:GetAttribute("Original") then
+                obj:SetAttribute("Original", obj.Value)
+            end
+            obj.Value = obj:GetAttribute("Original") * cfg.ClubReachMult
+        end
+    end
+end
+
+-- Keep applying
+task.spawn(function()
+    while true do
+        task.wait(1.2)
+        if cfg.ClubReachEnabled or true then
+            applyClubMods()
+        end
+    end
+end)
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    applyClubMods()
+end)
 
 --═════════════════ PLAYER ESP ═════════════════
 local espStore = {}
@@ -187,7 +265,7 @@ local function drawCorners(x, y, w, h, len, col, a, th, s)
     end
 end
 
---═════════════════ OBJECT ESP (FIXED) ═════════════════
+--═════════════════ OBJECT ESP ═════════════════
 local objStore = {}
 local objects = {}
 
@@ -243,7 +321,6 @@ end
 
 local function refreshObjects()
     local found = {}
-
     local function scan(parent, depth)
         if depth > 5 then return end
         for _, obj in ipairs(parent:GetChildren()) do
@@ -257,15 +334,11 @@ local function refreshObjects()
             scan(obj, depth + 1)
         end
     end
-
     scan(workspace, 0)
-
-    -- Common folders
     for _, name in ipairs({"Projectiles", "Thrown", "Deployables", "Mines", "Explosives", "Debris", "Effects", "Tools"}) do
         local folder = workspace:FindFirstChild(name)
         if folder then scan(folder, 0) end
     end
-
     for obj in pairs(objStore) do
         if not found[obj] then destroyObj(obj) end
     end
@@ -294,9 +367,7 @@ local connection = RunService.Heartbeat:Connect(function(dt)
     objScanTimer = objScanTimer + dt
     if objScanTimer >= 0.75 then
         objScanTimer = 0
-        if cfg.ObjectESP then
-            refreshObjects()
-        end
+        if cfg.ObjectESP then refreshObjects() end
     end
 
     updateTimer = updateTimer + dt
@@ -310,7 +381,7 @@ local connection = RunService.Heartbeat:Connect(function(dt)
     local a = alpha(cfg.BoxTransparency)
     local tA = alpha(cfg.TextTransparency)
 
-    --===== PLAYER ESP =====
+    -- Player ESP
     if cfg.Enabled then
         for i = 1, #playerCache do
             local plr = playerCache[i]
@@ -478,7 +549,7 @@ local connection = RunService.Heartbeat:Connect(function(dt)
         for _, s in pairs(espStore) do hide(s) end
     end
 
-    --===== OBJECT ESP =====
+    -- Object ESP
     if cfg.ObjectESP and HAS_DRAWING then
         for obj, data in pairs(objects) do
             local part = data.part
@@ -593,8 +664,8 @@ local function hoverEffect(btn, base, hov)
 end
 
 local win = Instance.new("Frame")
-win.Size = UDim2.new(0, 320, 0, 520)
-win.Position = UDim2.new(0.5, -160, 0.5, -260)
+win.Size = UDim2.new(0, 320, 0, 540)
+win.Position = UDim2.new(0.5, -160, 0.5, -270)
 win.BackgroundColor3 = T.BG
 win.BorderSizePixel = 0
 win.Active = true
@@ -666,7 +737,7 @@ tabRow.BackgroundTransparency = 1
 tabRow.Parent = win
 local tabLayout = Instance.new("UIListLayout")
 tabLayout.FillDirection = Enum.FillDirection.Horizontal
-tabLayout.Padding = UDim.new(0, 5)
+tabLayout.Padding = UDim.new(0, 4)
 tabLayout.Parent = tabRow
 
 local pages = Instance.new("Folder", win)
@@ -700,10 +771,10 @@ end
 
 local function makeTab(name)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 70, 1, 0)
+    btn.Size = UDim2.new(0, 58, 1, 0)
     btn.BackgroundColor3 = T.Card
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
+    btn.TextSize = 11
     btn.TextColor3 = T.SubText
     btn.Text = name
     btn.AutoButtonColor = false
@@ -714,7 +785,7 @@ local function makeTab(name)
     local ind = Instance.new("Frame")
     ind.Name = "Ind"
     ind.Size = UDim2.new(0, 3, 0, 0)
-    ind.Position = UDim2.new(0, 8, 0.5, -7)
+    ind.Position = UDim2.new(0, 6, 0.5, -7)
     ind.BackgroundColor3 = T.Accent
     ind.BorderSizePixel = 0
     ind.BackgroundTransparency = 1
@@ -1076,6 +1147,7 @@ end
 local mainTab   = makeTab("Main")
 local visualTab = makeTab("Visual")
 local objTab    = makeTab("Objects")
+local weaponTab = makeTab("Weapon")
 local miscTab   = makeTab("Misc")
 
 -- MAIN
@@ -1112,6 +1184,21 @@ makeToggle(secObj, "Enabled", "show landmines & remotes", cfg.ObjectESP, functio
 makeToggle(secObj, "Landmines", "red boxes", cfg.ShowLandmines, function(v) cfg.ShowLandmines = v end)
 makeToggle(secObj, "Remote Explosives", "orange boxes", cfg.ShowRemotes, function(v) cfg.ShowRemotes = v end)
 makeSlider(secObj, "Max Distance", 50, 5000, cfg.ObjectMaxDist, 0, "", function(v) cfg.ObjectMaxDist = v end)
+
+-- WEAPON (Spiked Club)
+local secClub = makeSection(weaponTab, "Spiked Club")
+makeToggle(secClub, "Extended Reach", "increase attack range", cfg.ClubReachEnabled, function(v)
+    cfg.ClubReachEnabled = v
+    applyClubMods()
+end)
+makeSlider(secClub, "Reach Multiplier", 1, 8, cfg.ClubReachMult, 1, "x", function(v)
+    cfg.ClubReachMult = v
+    applyClubMods()
+end)
+makeSlider(secClub, "Cooldown", 0.1, 2, cfg.ClubCooldown, 2, "s", function(v)
+    cfg.ClubCooldown = v
+    applyClubMods()
+end)
 
 -- MISC
 local secFl = makeSection(miscTab, "Filters")
@@ -1175,7 +1262,7 @@ local function showMenu()
     dot.BackgroundColor3 = Color3.fromRGB(80, 250, 140)
     win.Size = UDim2.new(0, 320, 0, 0)
     TweenSvc:Create(win, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 320, 0, 520)
+        Size = UDim2.new(0, 320, 0, 540)
     }):Play()
 end
 
@@ -1233,4 +1320,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v3.8 | Players + Fixed Object ESP (Landmines + Remotes)")
+print("[NEXUS] v3.9 | Players + Objects + Spiked Club Reach/Cooldown")
