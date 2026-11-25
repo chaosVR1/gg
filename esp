@@ -113,8 +113,11 @@ local function drawCorners(x, y, w, h, len, col, a, th, s)
     end
 end
 
+-- Safe RunService (never nil)
+local RS = game:GetService("RunService")
+
 local rayTimer = 0
-RunService.RenderStepped:Connect(function(dt)
+RS.RenderStepped:Connect(function(dt)
     if not Camera or Camera.Parent == nil then
         Camera = workspace.CurrentCamera
         if not Camera then return end
@@ -146,12 +149,10 @@ RunService.RenderStepped:Connect(function(dt)
                 if dist > cfg.MaxDistance then
                     hide(s)
                 else
-                    -- Stable screen positions
                     local headSP = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.35, 0))
                     local rootSP = Camera:WorldToViewportPoint(hrp.Position)
                     local feetSP = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.9, 0))
 
-                    -- Only draw if the player is actually in front of the camera
                     if rootSP.Z < 1 then
                         hide(s)
                     else
@@ -160,8 +161,8 @@ RunService.RenderStepped:Connect(function(dt)
                         local a = alpha(cfg.BoxTransparency)
                         local tA = alpha(cfg.TextTransparency)
 
-                        -- ===== Distance-based box (very stable) =====
-                        local scale = 220 / rootSP.Z          -- tweak this number if boxes feel too big/small
+                        -- Distance-based box (stable)
+                        local scale = 220 / rootSP.Z
                         local bw = math.clamp(38 * scale, 8, 90)
                         local bh = math.clamp(62 * scale, 14, 150)
                         local bx = rootSP.X - bw / 2
@@ -182,7 +183,6 @@ RunService.RenderStepped:Connect(function(dt)
                         end
 
                         if HAS_DRAWING then
-                            -- Box
                             if cfg.BoxStyle == "Corner" then
                                 local cornerLen = math.clamp(math.max(bw, bh) * 0.22, 4, 12)
                                 drawCorners(bx, by, bw, bh, cornerLen, col, a, cfg.BoxThickness, s)
@@ -200,7 +200,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 for i = 1, 8 do if s.corner[i] then s.corner[i].Visible = false end end
                             end
 
-                            -- Health bar
                             if cfg.ShowHealth then
                                 local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
                                 local barW = 3
@@ -219,7 +218,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 s.hpFill.Visible = false
                             end
 
-                            -- Name (locked to head)
                             if cfg.ShowName and headSP.Z > 0 then
                                 s.name.Text = plr.DisplayName
                                 s.name.Position = Vector2.new(headSP.X, headSP.Y - cfg.TextSize - 3)
@@ -232,7 +230,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 s.name.Visible = false
                             end
 
-                            -- Health text
                             if cfg.ShowHealthText and headSP.Z > 0 then
                                 local frac = hum.Health / math.max(hum.MaxHealth, 1)
                                 s.hpTxt.Text = math.floor(hum.Health + 0.5) .. " hp"
@@ -246,7 +243,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 s.hpTxt.Visible = false
                             end
 
-                            -- Distance (under feet)
                             if cfg.ShowDistance and feetSP.Z > 0 then
                                 s.dist.Text = math.floor(dist) .. "m"
                                 s.dist.Position = Vector2.new(feetSP.X, feetSP.Y + 2)
@@ -259,7 +255,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 s.dist.Visible = false
                             end
 
-                            -- Tool
                             if cfg.ShowTool and feetSP.Z > 0 then
                                 local tool = char:FindFirstChildOfClass("Tool")
                                 if tool then
@@ -277,7 +272,6 @@ RunService.RenderStepped:Connect(function(dt)
                                 s.tool.Visible = false
                             end
 
-                            -- Tracer
                             if cfg.TracerStyle ~= "Off" then
                                 local from
                                 if cfg.TracerStyle == "Bottom" then
