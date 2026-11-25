@@ -1,0 +1,1024 @@
+--// ═══════════════════════════════════════════════════
+--//   NEXUS ESP v3.0  +  Infinite Yield
+--//   Execute ONCE per session
+--//   ";" = IY console  |  RightShift = menu
+--// ═══════════════════════════════════════════════════
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local TweenSvc   = game:GetService("TweenService")
+local LP         = Players.LocalPlayer
+local Camera     = workspace.CurrentCamera
+
+local cfg = {
+    Enabled = true, BoxStyle = "Corner", BoxTransparency = 10, BoxThickness = 1.5,
+    ColorMode = "Team", CustomColor = Color3.fromRGB(170, 120, 255),
+    UseVisibility = true, TeamCheck = true, MaxDistance = 2500,
+    TracerStyle = "Off", TracerThickness = 1.2, TracerTransparency = 30,
+    ShowName = true, ShowHealth = true, ShowDistance = true, ShowTool = true,
+    TextSize = 14, TextTransparency = 5,
+    Chams = false, ChamsTransparency = 70, ChamsThroughWalls = true,
+    MenuKey = Enum.KeyCode.RightShift,
+}
+do
+    local env = (type(getgenv) == "function" and getgenv()) or _G
+    env.NEXUS_ESP = cfg
+end
+
+--═════════════════ ESP CORE ═════════════════
+local HAS_DRAWING = (type(Drawing) == "table" and type(Drawing.new) == "function")
+local FONT = 2
+if HAS_DRAWING then pcall(function() FONT = Drawing.Fonts.Plex end) end
+
+local function newDraw(c, p)
+    if not HAS_DRAWING then return nil end
+    local ok, o = pcall(Drawing.new, c)
+    if not ok or not o then return nil end
+    if p then for k, v in pairs(p) do pcall(function() o[k] = v end) end end
+    return o
+end
+local function killDraw(o)
+    if not o then return end
+    pcall(function() o:Remove() end) pcall(function() o:Destroy() end)
+end
+local function alpha(t) return math.clamp(1 - t / 100, 0, 1) end
+
+local espStore = {}
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.RespectCanCollide = false
+
+local function isVisible(char)
+    if not cfg.UseVisibility then return true end
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not Camera then return false end
+    local origin = Camera.CFrame.Position
+    rayParams.FilterDescendantsInstances = {LP.Character, char}
+    return workspace:Raycast(origin, hrp.Position - origin, rayParams) == nil
+end
+
+local function getBox(char, hrp)
+    local ok, s = pcall(function() return char:GetExtentsSize() end)
+    local size = (ok and s) or Vector3.new(4, 6, 2)
+    local top = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, size.Y / 2 + 0.35, 0))
+    local bot = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, size.Y / 2, 0))
+    if top.Z <= 0 or bot.Z <= 0 then return nil end
+    local h = math.abs(bot.Y - top.Y)
+    if h < 3 then return nil end
+    local halfW = math.max(size.X, size.Z) * 0.5
+    local r = Camera:WorldToViewportPoint(hrp.Position + Camera.CFrame.RightVector * halfW)
+    local l = Camera:WorldToViewportPoint(hrp.Position - Camera.CFrame.RightVector * halfW)
+    local w = math.abs(r.X - l.X)
+    if w ~= w or w < 4 then w = h * 0.5 end
+    return top.X, math.min(top.Y, bot.Y), w, h
+end
+
+local function colorFor(plr, vis)
+    local base
+    if cfg.ColorMode == "Custom" then
+        base = cfg.CustomColor
+    elseif plr.Team then
+        base = plr.TeamColor.Color
+    else
+        base = Color3.fromRGB(255, 255, 255)
+    end
+    if cfg.UseVisibility and vis == false then
+        return Color3.fromRGB(255, 85, 85)
+    end
+    return base
+end
+
+local function buildState(plr)
+    local s = {corner = {}}
+    for i = 1, 4 do s.corner[i] = newDraw("Line", {Visible = false}) end
+    s.box    = newDraw("Square", {Filled = false, Visible = false})
+    s.hpBack = newDraw("Square", {Filled = true, Color = Color3.fromRGB(10, 10, 12), Visible = false})
+    s.hpFill = newDraw("Square", {Filled = true, Visible = false})
+    s.name   = newDraw("Text", {Center = true, Outline = true, Visible = false})
+    s.hpTxt  = newDraw("Text", {Center = true, Outline = true, Visible = false})
+    s.dist   = newDraw("Text", {Center = true, Outline = true, Visible = false})
+    s.tool   = newDraw("Text", {Center = true, Outline = true, Visible = false})
+    s.tracer = newDraw("Line", {Visible = false})
+    s.chams = Instance.new("Highlight")
+    s.chams.Name = "_nexus_chams"
+    s.chams.DepthMode = cfg.ChamsThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+    s.chams.Enabled = false
+    espStore[plr] = s
+    return s
+end
+
+local function hide(s)
+    if not s then return end
+    for i = 1, 4 do if s.corner[i] then s.corner[i].Visible = false end end
+    for _, k in ipairs({"box", "hpBack", "hpFill", "name", "hpTxt", "dist", "tool", "tracer"}) do
+        if s[k] then s[k].Visible = false end
+    end
+    s.chams.Enabled = false
+end
+
+local function destroyState(plr)
+    local s = espStore[plr]
+    if not s then return end
+    for i = 1, 4 do killDraw(s.corner[i]) end
+    for _, k in ipairs({"box", "hpBack", "hpFill", "name", "hpTxt", "dist", "tool", "tracer"}) do
+        killDraw(s[k])
+    end
+    pcall(function() s.chams:Destroy() end)
+    espStore[plr] = nil
+end
+
+local function drawCorners(x, y, w, h, len, col, a, th, s)
+    local cs = {
+        {x, y, x + len, y, x, y, x, y + len},
+        {x + w - len, y, x + w, y, x + w, y, x + w, y + len},
+        {x, y + h - len, x, y + h, x, y + h, x + len, y + h},
+        {x + w - len, y + h, x + w, y + h, x + w, y + h - len, x + w, y + h},
+    }
+    for ci, cd in ipairs(cs) do
+        for li = 1, 2 do
+            local line = s.corner[(ci - 1) * 2 + li]
+            if line then
+                local i2 = (li - 1) * 2 + 1
+                line.From = Vector2.new(cd[i2], cd[i2 + 1])
+                line.To = Vector2.new(cd[i2 + 2], cd[i2 + 3])
+                line.Color = col line.Thickness = th line.Transparency = a line.Visible = true
+            end
+        end
+    end
+end
+
+local rayTimer = 0
+RunService.RenderStepped:Connect(function(dt)
+    if not Camera or Camera.Parent == nil then
+        Camera = workspace.CurrentCamera
+        if not Camera then return end
+    end
+    rayTimer = rayTimer + dt
+    local doRay = rayTimer >= 1 / 15
+    if doRay then rayTimer = 0 end
+
+    local vp = Camera.ViewportSize
+    local myChar = LP.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            local s = espStore[plr] or buildState(plr)
+            local char = plr.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            if not cfg.Enabled or not char or not hum or not hrp or hum.Health <= 0
+                or not char.Parent
+                or (cfg.TeamCheck and LP.Team ~= nil and plr.Team == LP.Team) then
+                hide(s)
+            else
+                local dist = myHrp and (myHrp.Position - hrp.Position).Magnitude
+                    or (Camera.CFrame.Position - hrp.Position).Magnitude
+                if dist > cfg.MaxDistance then hide(s) else
+                    local bx, by, bw, bh = getBox(char, hrp)
+                    if not bx then hide(s) else
+                        if doRay then s.lastVis = isVisible(char) end
+                        local col = colorFor(plr, s.lastVis)
+                        local a = alpha(cfg.BoxTransparency)
+
+                        local chA = alpha(cfg.ChamsTransparency)
+                        if cfg.Chams and chA > 0 then
+                            if s.chams.Parent ~= char then s.chams.Parent = char end
+                            s.chams.Adornee = char
+                            s.chams.FillColor = col
+                            s.chams.OutlineColor = col
+                            s.chams.FillTransparency = chA
+                            s.chams.OutlineTransparency = math.max(chA - 0.35, 0)
+                            s.chams.Enabled = true
+                        else
+                            s.chams.Enabled = false
+                        end
+
+                        if HAS_DRAWING then
+                            if cfg.BoxStyle == "Corner" then
+                                drawCorners(bx, by, bw, bh, math.max(bw, bh) * 0.2, col, a, cfg.BoxThickness, s)
+                                s.box.Visible = false
+                            elseif cfg.BoxStyle == "Full" then
+                                s.box.Size = Vector2.new(bw, bh)
+                                s.box.Position = Vector2.new(bx, by)
+                                s.box.Color = col
+                                s.box.Thickness = cfg.BoxThickness
+                                s.box.Transparency = a
+                                s.box.Visible = true
+                                for i = 1, 4 do s.corner[i].Visible = false end
+                            else
+                                s.box.Visible = false
+                                for i = 1, 4 do s.corner[i].Visible = false end
+                            end
+
+                            if cfg.ShowHealth then
+                                local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                                local barW = 3
+                                local barX = bx - barW - 4
+                                s.hpBack.Size = Vector2.new(barW, bh)
+                                s.hpBack.Position = Vector2.new(barX, by)
+                                s.hpBack.Transparency = math.min(a + 0.4, 1)
+                                s.hpBack.Visible = true
+                                s.hpFill.Size = Vector2.new(barW, bh * frac)
+                                s.hpFill.Position = Vector2.new(barX, by + bh * (1 - frac))
+                                s.hpFill.Color = Color3.fromHSV(0.33 * frac, 0.9, 1)
+                                s.hpFill.Transparency = a
+                                s.hpFill.Visible = true
+                            else
+                                s.hpBack.Visible = false s.hpFill.Visible = false
+                            end
+
+                            local tA = alpha(cfg.TextTransparency)
+                            local cx = bx + bw / 2
+                            local headY = by - cfg.TextSize - 6
+
+                            if cfg.ShowName then
+                                s.name.Text = plr.DisplayName
+                                s.name.Position = Vector2.new(cx, headY)
+                                s.name.Size = cfg.TextSize
+                                s.name.Color = col
+                                s.name.Transparency = tA
+                                s.name.Font = FONT
+                                s.name.Visible = true
+                            else s.name.Visible = false end
+
+                            if cfg.ShowHealth then
+                                local frac = hum.Health / math.max(hum.MaxHealth, 1)
+                                s.hpTxt.Text = string.format("%d hp", math.floor(hum.Health + 0.5))
+                                s.hpTxt.Position = Vector2.new(cx, headY + cfg.TextSize + 2)
+                                s.hpTxt.Size = cfg.TextSize - 2
+                                s.hpTxt.Color = Color3.fromHSV(0.33 * frac, 0.85, 1)
+                                s.hpTxt.Transparency = tA
+                                s.hpTxt.Font = FONT
+                                s.hpTxt.Visible = true
+                            else s.hpTxt.Visible = false end
+
+                            if cfg.ShowDistance then
+                                s.dist.Text = math.floor(dist) .. "m"
+                                s.dist.Position = Vector2.new(cx, by + bh + 4)
+                                s.dist.Size = cfg.TextSize - 2
+                                s.dist.Color = Color3.fromRGB(190, 190, 205)
+                                s.dist.Transparency = tA
+                                s.dist.Font = FONT
+                                s.dist.Visible = true
+                            else s.dist.Visible = false end
+
+                            if cfg.ShowTool then
+                                local tool = char:FindFirstChildOfClass("Tool")
+                                if tool then
+                                    s.tool.Text = "[" .. tool.Name .. "]"
+                                    s.tool.Position = Vector2.new(cx, by + bh + (cfg.ShowDistance and 19 or 4))
+                                    s.tool.Size = cfg.TextSize - 2
+                                    s.tool.Color = Color3.fromRGB(255, 220, 130)
+                                    s.tool.Transparency = tA
+                                    s.tool.Font = FONT
+                                    s.tool.Visible = true
+                                else s.tool.Visible = false end
+                            else s.tool.Visible = false end
+
+                            if cfg.TracerStyle ~= "Off" then
+                                local from
+                                if cfg.TracerStyle == "Bottom" then from = Vector2.new(vp.X / 2, vp.Y)
+                                elseif cfg.TracerStyle == "Top" then from = Vector2.new(vp.X / 2, 0)
+                                else local m = UIS:GetMouseLocation() from = Vector2.new(m.X, m.Y) end
+                                s.tracer.From = from
+                                s.tracer.To = Vector2.new(cx, by + bh)
+                                s.tracer.Color = col
+                                s.tracer.Thickness = cfg.TracerThickness
+                                s.tracer.Transparency = alpha(cfg.TracerTransparency)
+                                s.tracer.Visible = true
+                            else s.tracer.Visible = false end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(destroyState)
+
+--═════════════════ UI LIBRARY ═════════════════
+local gui = Instance.new("ScreenGui")
+gui.Name = "NexusV3"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 9999
+do
+    local parent = LP:WaitForChild("PlayerGui")
+    if type(gethui) == "function" then pcall(function() parent = gethui() end)
+    else pcall(function() parent = game:GetService("CoreGui") end) end
+    pcall(function() gui.Parent = parent end)
+    if not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
+end
+
+local T = {
+    BG      = Color3.fromRGB(13, 13, 18),
+    Card    = Color3.fromRGB(22, 22, 30),
+    CardHi  = Color3.fromRGB(30, 30, 40),
+    Stroke  = Color3.fromRGB(45, 45, 58),
+    Text    = Color3.fromRGB(240, 240, 248),
+    SubText = Color3.fromRGB(140, 142, 160),
+    Accent  = Color3.fromRGB(139, 92, 246),
+    Accent2 = Color3.fromRGB(217, 70, 239),
+    On      = Color3.fromRGB(139, 92, 246),
+    Off     = Color3.fromRGB(42, 42, 54),
+    Hover   = Color3.fromRGB(38, 38, 50),
+}
+
+local function round(i, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r)
+    c.Parent = i
+end
+local function stroke(i, col, th)
+    local s = Instance.new("UIStroke")
+    s.Color = col or T.Stroke
+    s.Thickness = th or 1
+    s.Parent = i
+    return s
+end
+local function gradient(i, c1, c2, rot)
+    local g = Instance.new("UIGradient")
+    g.Color = ColorSequence.new(c1, c2)
+    g.Rotation = rot or 90
+    g.Parent = i
+end
+local function hoverEffect(btn, base, hovered)
+    btn.MouseEnter:Connect(function()
+        TweenSvc:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = hovered}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenSvc:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = base}):Play()
+    end)
+end
+
+-- window
+local win = Instance.new("Frame")
+win.Size = UDim2.new(0, 320, 0, 470)
+win.Position = UDim2.new(0.5, -160, 0.5, -235)
+win.BackgroundColor3 = T.BG
+win.BorderSizePixel = 0
+win.Active = true
+win.Parent = gui
+round(win, 14)
+stroke(win, T.Stroke, 1)
+
+-- glow (soft accent border)
+local glow = Instance.new("ImageLabel")
+glow.Size = UDim2.new(1, 60, 1, 60)
+glow.Position = UDim2.new(0, -30, 0, -30)
+glow.BackgroundTransparency = 1
+glow.Image = "rbxassetid://5028857084"
+glow.ImageColor3 = T.Accent
+glow.ImageTransparency = 0.85
+glow.ScaleType = Enum.ScaleType.Slice
+glow.SliceCenter = Rect.new(24, 24, 24, 24)
+glow.ZIndex = 0
+glow.Parent = win
+
+-- header with gradient
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 46)
+header.BackgroundColor3 = Color3.new(1, 1, 1)
+header.BorderSizePixel = 0
+header.Parent = win
+round(header, 14)
+gradient(header, T.Accent, T.Accent2, 25)
+
+-- fix corner bleed on header
+local headerPatch = Instance.new("Frame")
+headerPatch.Size = UDim2.new(1, 0, 0, 16)
+headerPatch.Position = UDim2.new(0, 0, 1, -16)
+headerPatch.BackgroundColor3 = Color3.new(1, 1, 1)
+headerPatch.BorderSizePixel = 0
+headerPatch.Parent = header
+gradient(headerPatch, Color3.new(0.4, 0.2, 0.85), Color3.new(0.8, 0.25, 0.9), 0)
+
+local logo = Instance.new("TextLabel")
+logo.Size = UDim2.new(0, 40, 1, 0)
+logo.Position = UDim2.new(0, 14, 0, 0)
+logo.BackgroundTransparency = 1
+logo.Font = Enum.Font.GothamBlack
+logo.TextSize = 20
+logo.TextColor3 = Color3.new(1, 1, 1)
+logo.Text = "N"
+logo.Parent = header
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -110, 1, 0)
+title.Position = UDim2.new(0, 48, 0, 0)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "NEXUS  ESP"
+title.Parent = header
+
+local sub = Instance.new("TextLabel")
+sub.Size = UDim2.new(1, -110, 1, 0)
+sub.Position = UDim2.new(0, 48, 0, 4)
+sub.BackgroundTransparency = 1
+sub.Font = Enum.Font.Gotham
+sub.TextSize = 10
+sub.TextColor3 = Color3.fromRGB(255, 255, 255)
+sub.TextTransparency = 0.35
+sub.TextXAlignment = Enum.TextXAlignment.Left
+sub.Text = ""
+sub.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -36, 0, 9)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.BackgroundTransparency = 0.8
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.Text = "×"
+closeBtn.Parent = header
+round(closeBtn, 8)
+
+-- status dot
+local dot = Instance.new("Frame")
+dot.Size = UDim2.new(0, 8, 0, 8)
+dot.Position = UDim2.new(1, -52, 0, 19)
+dot.BackgroundColor3 = Color3.fromRGB(80, 250, 140)
+dot.BorderSizePixel = 0
+dot.Parent = header
+round(dot, 4)
+
+-- tab bar
+local tabRow = Instance.new("Frame")
+tabRow.Size = UDim2.new(1, -16, 0, 34)
+tabRow.Position = UDim2.new(0, 8, 0, 54)
+tabRow.BackgroundTransparency = 1
+tabRow.Parent = win
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 5)
+tabLayout.Parent = tabRow
+
+local pages = Instance.new("Folder")
+pages.Parent = win
+local tabButtons = {}
+
+local function switchTab(name)
+    for n, btn in pairs(tabButtons) do
+        local on = (n == name)
+        TweenSvc:Create(btn, TweenInfo.new(0.2), {
+            BackgroundColor3 = on and T.CardHi or T.Card,
+            TextColor3 = on and T.Text or T.SubText,
+        }):Play()
+        local ind = btn:FindFirstChild("Ind")
+        if ind then
+            TweenSvc:Create(ind, TweenInfo.new(0.2), {
+                BackgroundTransparency = on and 0 or 1,
+                Size = on and UDim2.new(0, 3, 0, 14) or UDim2.new(0, 3, 0, 0),
+            }):Play()
+        end
+    end
+    for n, page in pairs(pages:GetChildren()) do page.Visible = (n == name) end
+end
+
+local order = 0
+local function nextOrder() order = order + 1 return order end
+
+local function makeTab(name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 92, 1, 0)
+    btn.BackgroundColor3 = T.Card
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.TextColor3 = T.SubText
+    btn.Text = name
+    btn.AutoButtonColor = false
+    btn.Parent = tabRow
+    round(btn, 8)
+    tabButtons[name] = btn
+
+    local ind = Instance.new("Frame")
+    ind.Name = "Ind"
+    ind.Size = UDim2.new(0, 3, 0, 0)
+    ind.Position = UDim2.new(0, 8, 0.5, -7)
+    ind.BackgroundColor3 = T.Accent
+    ind.BorderSizePixel = 0
+    ind.BackgroundTransparency = 1
+    ind.Parent = btn
+    round(ind, 2)
+
+    btn.MouseButton1Click:Connect(function() switchTab(name) end)
+
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name
+    page.Size = UDim2.new(1, -16, 1, -104)
+    page.Position = UDim2.new(0, 8, 0, 96)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = T.Accent
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = false
+    page.Parent = pages
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, 6)
+    l.Parent = page
+    return page
+end
+
+-- section container
+local function makeSection(page, label)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 30)
+    card.BackgroundColor3 = T.Card
+    card.BorderSizePixel = 0
+    card.LayoutOrder = nextOrder()
+    card.Parent = page
+    round(card, 10)
+    stroke(card, T.Stroke, 1)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 1, 0)
+    lbl.Position = UDim2.new(0, 14, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 11
+    lbl.TextColor3 = T.Accent
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = string.upper(label)
+    lbl.Parent = card
+
+    local inner = Instance.new("Frame")
+    inner.Name = "Inner"
+    inner.Size = UDim2.new(1, 0, 0, 0)
+    inner.BackgroundTransparency = 1
+    inner.Parent = card
+
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, 4)
+    l.Parent = inner
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 8)
+    pad.PaddingRight = UDim.new(0, 8)
+    pad.PaddingTop = UDim.new(0, 4)
+    pad.PaddingBottom = UDim.new(0, 8)
+    pad.Parent = inner
+
+    -- auto-grow the section card
+    task.spawn(function()
+        while card.Parent do
+            task.wait(0.1)
+            local h = inner.AbsoluteSize.Y + 34
+            if card.AbsoluteSize.Y ~= h and h > 34 then
+                card.Size = UDim2.new(1, 0, 0, h)
+            end
+        end
+    end)
+
+    return inner
+end
+
+-- toggle switch (proper, big, animated)
+local function makeToggle(parent, label, desc, initial, onChange)
+    local state = initial
+    local row = Instance.new("TextButton")
+    row.Size = UDim2.new(1, 0, 0, 36)
+    row.BackgroundColor3 = T.CardHi
+    row.BorderSizePixel = 0
+    row.AutoButtonColor = false
+    row.Text = ""
+    row.Parent = parent
+    round(row, 8)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -70, 0, 16)
+    lbl.Position = UDim2.new(0, 10, 0, 5)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.TextColor3 = T.Text
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = label
+    lbl.Parent = row
+
+    local d = Instance.new("TextLabel")
+    d.Size = UDim2.new(1, -70, 0, 12)
+    d.Position = UDim2.new(0, 10, 0, 20)
+    d.BackgroundTransparency = 1
+    d.Font = Enum.Font.Gotham
+    d.TextSize = 10
+    d.TextColor3 = T.SubText
+    d.TextXAlignment = Enum.TextXAlignment.Left
+    d.Text = desc or ""
+    d.Parent = row
+
+    local sw = Instance.new("Frame")
+    sw.Size = UDim2.new(0, 40, 0, 20)
+    sw.Position = UDim2.new(1, -50, 0.5, -10)
+    sw.BackgroundColor3 = state and T.On or T.Off
+    sw.BorderSizePixel = 0
+    sw.Parent = row
+    round(sw, 10)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 14, 0, 14)
+    knob.Position = state and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.Parent = sw
+    round(knob, 7)
+
+    hoverEffect(row, T.CardHi, Color3.fromRGB(36, 36, 48))
+
+    local function paint()
+        TweenSvc:Create(sw, TweenInfo.new(0.18), {BackgroundColor3 = state and T.On or T.Off}):Play()
+        TweenSvc:Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = state and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        }):Play()
+    end
+
+    row.MouseButton1Click:Connect(function()
+        state = not state
+        paint()
+        pcall(onChange, state)
+    end)
+    paint()
+    return {set = function(v) state = v; paint() end, get = function() return state end}
+end
+
+-- slider with knob
+local function makeSlider(parent, label, minV, maxV, defaultV, decimals, suffix, onChange)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 44)
+    holder.BackgroundColor3 = T.CardHi
+    holder.BorderSizePixel = 0
+    holder.Parent = parent
+    round(holder, 8)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 0, 16)
+    lbl.Position = UDim2.new(0, 10, 0, 5)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 12
+    lbl.TextColor3 = T.Text
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = holder
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -34, 0, 4)
+    track.Position = UDim2.new(0, 12, 0, 32)
+    track.BackgroundColor3 = T.Off
+    track.BorderSizePixel = 0
+    track.Parent = holder
+    round(track, 2)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = T.Accent
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+    round(fill, 2)
+    gradient(fill, T.Accent, T.Accent2, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 12, 0, 12)
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 3
+    knob.Parent = track
+    round(knob, 6)
+    stroke(knob, T.Accent, 2)
+
+    local hit = Instance.new("TextButton")
+    hit.Size = UDim2.new(1, 0, 0, 24)
+    hit.Position = UDim2.new(0, 0, 0, 20)
+    hit.BackgroundTransparency = 1
+    hit.Text = ""
+    hit.Parent = holder
+
+    local val = math.clamp(defaultV, minV, maxV)
+    local dragging = false
+
+    local function fmt(v)
+        local m = 10 ^ decimals
+        v = math.floor(v * m + 0.5) / m
+        local s = tostring(v)
+        if suffix then s = s .. suffix end
+        return s
+    end
+
+    local function paint()
+        local t = (val - minV) / (maxV - minV)
+        t = math.clamp(t, 0, 1)
+        fill.Size = UDim2.new(t, 0, 1, 0)
+        knob.Position = UDim2.new(t, 0, 0.5, 0)
+        lbl.Text = label .. "   " .. fmt(val)
+    end
+
+    local function setFromX(px)
+        local rel = math.clamp((px - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+        local v = minV + rel * (maxV - minV)
+        local m = 10 ^ decimals
+        v = math.floor(v * m + 0.5) / m
+        if v ~= val then
+            val = v
+            paint()
+            pcall(onChange, v)
+        end
+    end
+
+    paint()
+
+    hit.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            setFromX(input.Position.X)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    task.spawn(function()
+        while holder.Parent do
+            RunService.RenderStepped:Wait()
+            if dragging then setFromX(UIS:GetMouseLocation().X) end
+        end
+    end)
+    return holder
+end
+
+-- dropdown
+local function makeDropdown(parent, label, options, defaultOpt, onChange)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 36)
+    holder.BackgroundColor3 = T.CardHi
+    holder.BorderSizePixel = 0
+    holder.Parent = parent
+    round(holder, 8)
+
+    local current = defaultOpt
+    local open = false
+    local listFrame
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 13
+    btn.TextColor3 = T.Text
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Text = "  " .. label
+    btn.Parent = holder
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0, 100, 1, 0)
+    valLbl.Position = UDim2.new(1, -124, 0, 0)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Font = Enum.Font.GothamBold
+    valLbl.TextSize = 12
+    valLbl.TextColor3 = T.Accent
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.Text = current
+    valLbl.Parent = holder
+
+    local function closeList()
+        if listFrame then listFrame:Destroy() listFrame = nil open = false end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        if open then closeList() return end
+        open = true
+        listFrame = Instance.new("Frame")
+        listFrame.Size = UDim2.new(1, 0, 0, math.min(#options, 4) * 30 + 8)
+        listFrame.Position = UDim2.new(0, 0, 1, 4)
+        listFrame.BackgroundColor3 = T.BG
+        listFrame.BorderSizePixel = 0
+        listFrame.ZIndex = 10
+        listFrame.Parent = holder
+        round(listFrame, 8)
+        stroke(listFrame, T.Stroke, 1)
+
+        local l = Instance.new("UIListLayout")
+        l.Padding = UDim.new(0, 2)
+        l.Parent = listFrame
+        local p = Instance.new("UIPadding")
+        p.PaddingTop = UDim.new(0, 4) p.PaddingBottom = UDim.new(0, 4)
+        p.PaddingLeft = UDim.new(0, 4) p.PaddingRight = UDim.new(0, 4)
+        p.Parent = listFrame
+
+        for _, opt in ipairs(options) do
+            local ob = Instance.new("TextButton")
+            ob.Size = UDim2.new(1, 0, 0, 26)
+            ob.BackgroundColor3 = (opt == current) and T.Accent or T.Card
+            ob.BackgroundTransparency = (opt == current) and 0 or 0.4
+            ob.Font = Enum.Font.GothamMedium
+            ob.TextSize = 12
+            ob.TextColor3 = (opt == current) and Color3.new(1, 1, 1) or T.SubText
+            ob.Text = "  " .. opt
+            ob.AutoButtonColor = false
+            ob.ZIndex = 11
+            ob.Parent = listFrame
+            round(ob, 6)
+            hoverEffect(ob, ob.BackgroundColor3, T.CardHi)
+            ob.MouseButton1Click:Connect(function()
+                current = opt
+                valLbl.Text = opt
+                closeList()
+                pcall(onChange, opt)
+            end)
+        end
+    end)
+    return holder
+end
+
+-- drag (header)
+do
+    local dragging = false
+    local dragStart, startPos
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = win.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                     startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+end
+
+--═════════════════ BUILD MENU ═════════════════
+local mainTab   = makeTab("Main")
+local visualTab = makeTab("Visual")
+local miscTab   = makeTab("Misc")
+
+-- MAIN
+local secMain = makeSection(mainTab, "ESP")
+makeToggle(secMain, "Enabled", "master switch for all ESP", cfg.Enabled, function(v) cfg.Enabled = v end)
+makeDropdown(secMain, "Box Style", {"Corner", "Full", "Highlight"}, cfg.BoxStyle, function(v) cfg.BoxStyle = v end)
+makeDropdown(secMain, "Color", {"Team", "Custom"}, cfg.ColorMode, function(v) cfg.ColorMode = v end)
+
+local secTr = makeSection(mainTab, "Tracers")
+makeDropdown(secTr, "Tracers", {"Off", "Bottom", "Top", "Mouse"}, cfg.TracerStyle, function(v) cfg.TracerStyle = v end)
+makeSlider(secTr, "Opacity", 0, 100, cfg.TracerTransparency, 0, "%", function(v) cfg.TracerTransparency = v end)
+
+local secCh = makeSection(mainTab, "Chams")
+makeToggle(secCh, "Chams", "3D glow through walls", cfg.Chams, function(v) cfg.Chams = v end)
+makeSlider(secCh, "Chams Opacity", 0, 100, cfg.ChamsTransparency, 0, "%", function(v) cfg.ChamsTransparency = v end)
+
+-- VISUAL
+local secBox = makeSection(visualTab, "Box")
+makeSlider(secBox, "Transparency", 0, 100, cfg.BoxTransparency, 0, "%", function(v) cfg.BoxTransparency = v end)
+makeSlider(secBox, "Thickness", 1, 4, cfg.BoxThickness, 1, "px", function(v) cfg.BoxThickness = v end)
+
+local secTxt = makeSection(visualTab, "Text")
+makeToggle(secTxt, "Name", "above head", cfg.ShowName, function(v) cfg.ShowName = v end)
+makeToggle(secTxt, "Health Text", "above head, under name", true, function(v) cfg.ShowHealthText = v end)
+makeToggle(secTxt, "Health Bar", "left of box", cfg.ShowHealth, function(v) cfg.ShowHealth = v end)
+makeToggle(secTxt, "Distance", "below box", cfg.ShowDistance, function(v) cfg.ShowDistance = v end)
+makeToggle(secTxt, "Tool", "equipped item below box", cfg.ShowTool, function(v) cfg.ShowTool = v end)
+makeSlider(secTxt, "Text Size", 10, 22, cfg.TextSize, 0, "px", function(v) cfg.TextSize = v end)
+makeSlider(secTxt, "Text Opacity", 0, 100, cfg.TextTransparency, 0, "%", function(v) cfg.TextTransparency = v end)
+
+-- MISC
+local secFl = makeSection(miscTab, "Filters")
+makeToggle(secFl, "Team Check", "hide teammates", cfg.TeamCheck, function(v) cfg.TeamCheck = v end)
+makeToggle(secFl, "Visibility Check", "red when behind walls", cfg.UseVisibility, function(v) cfg.UseVisibility = v end)
+makeSlider(secFl, "Max Distance", 50, 5000, cfg.MaxDistance, 0, "", function(v) cfg.MaxDistance = v end)
+
+local secIY = makeSection(miscTab, "Infinite Yield")
+local iyBtn = Instance.new("TextButton")
+iyBtn.Size = UDim2.new(1, 0, 0, 32)
+iyBtn.BackgroundColor3 = T.CardHi
+iyBtn.AutoButtonColor = false
+iyBtn.Font = Enum.Font.GothamBold
+iyBtn.TextSize = 13
+iyBtn.TextColor3 = T.Text
+iyBtn.Text = "Reload IY   ( console = ; )"
+iyBtn.Parent = secIY
+round(iyBtn, 8)
+hoverEffect(iyBtn, T.CardHi, T.Hover)
+iyBtn.MouseButton1Click:Connect(function()
+    pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+    end)
+end)
+
+local secX = makeSection(miscTab, "Unload")
+local unloadBtn = Instance.new("TextButton")
+unloadBtn.Size = UDim2.new(1, 0, 0, 32)
+unloadBtn.BackgroundColor3 = Color3.fromRGB(60, 24, 30)
+unloadBtn.AutoButtonColor = false
+unloadBtn.Font = Enum.Font.GothamBold
+unloadBtn.TextSize = 13
+unloadBtn.TextColor3 = Color3.fromRGB(255, 150, 150)
+unloadBtn.Text = "Unload NEXUS"
+unloadBtn.Parent = secX
+round(unloadBtn, 8)
+hoverEffect(unloadBtn, Color3.fromRGB(60, 24, 30), Color3.fromRGB(90, 30, 40))
+unloadBtn.MouseButton1Click:Connect(function()
+    for plr in pairs(espStore) do destroyState(plr) end
+    gui:Destroy()
+end)
+
+switchTab("Main")
+
+-- close/minimize
+local open = true
+closeBtn.MouseButton1Click:Connect(function()
+    open = false
+    TweenSvc:Create(win, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        Size = UDim2.new(0, 320, 0, 0),
+        Position = UDim2.new(0.5, -160, 0.5, 0),
+    }):Play()
+    task.delay(0.25, function() win.Visible = false end)
+    dot.BackgroundColor3 = Color3.fromRGB(255, 90, 90)
+end)
+
+local function showMenu()
+    open = true
+    win.Visible = true
+    dot.BackgroundColor3 = Color3.fromRGB(80, 250, 140)
+    win.Size = UDim2.new(0, 320, 0, 0)
+    TweenSvc:Create(win, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 320, 0, 470),
+    }):Play()
+end
+
+-- floating button (mobile + reopen)
+local floatBtn = Instance.new("TextButton")
+floatBtn.Size = UDim2.new(0, 42, 0, 42)
+floatBtn.Position = UDim2.new(0, 16, 0.5, -21)
+floatBtn.BackgroundColor3 = T.Card
+floatBtn.Font = Enum.Font.GothamBlack
+floatBtn.TextSize = 18
+floatBtn.TextColor3 = T.Accent
+floatBtn.Text = "N"
+floatBtn.AutoButtonColor = false
+floatBtn.Parent = gui
+round(floatBtn, 12)
+gradient(floatBtn, T.Card, T.CardHi, 90)
+stroke(floatBtn, T.Accent, 1.5)
+hoverEffect(floatBtn, T.Card, T.Hover)
+
+do  -- draggable float button
+    local dragging = false, ds, sp
+    local ds, sp
+    floatBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true ds = input.Position sp = floatBtn.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - ds
+            floatBtn.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+end
+
+floatBtn.MouseButton1Click:Connect(function()
+    if open then closeBtn:Activate() else showMenu() end
+end)
+
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == cfg.MenuKey then
+        if open then closeBtn:Activate() else showMenu() end
+    end
+end)
+
+--═════════════════ INFINITE YIELD ═════════════════
+task.spawn(function()
+    local ok, err = pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+    end)
+    if ok then print("[NEXUS] IY loaded | ';' opens console")
+    else warn("[NEXUS] IY failed: " .. tostring(err)) end
+end)
+
+print("[NEXUS] v3.0 ready | Drawing API: " .. tostring(HAS_DRAWING) .. " | RightShift = menu | ; = IY")
