@@ -1,0 +1,614 @@
+--// NEXUS ESP + IY v2.1
+--// Hosted edition - this file is the raw source, no wrapper
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local TweenSvc   = game:GetService("TweenService")
+local LP         = Players.LocalPlayer
+local Camera     = workspace.CurrentCamera
+
+local cfg = {
+    Enabled = true, BoxStyle = "Corner", BoxTransparency = 15, BoxThickness = 1.4,
+    ColorMode = "Team", CustomColor = Color3.fromRGB(255,107,107),
+    UseVisibility = true, TeamCheck = true, MaxDistance = 2000,
+    TracerStyle = "Off", TracerThickness = 1.2, TracerTransparency = 35,
+    ShowName = true, ShowHealth = true, ShowDistance = true, ShowTool = true,
+    TextSize = 14, TextTransparency = 10,
+    Chams = false, ChamsTransparency = 65, ChamsThroughWalls = true,
+    MenuKey = Enum.KeyCode.Insert,
+}
+local env = (type(getgenv)=="function" and getgenv()) or _G
+env.NEXUS_ESP = cfg
+
+local HAS_DRAWING = (type(Drawing)=="table" and type(Drawing.new)=="function")
+local FONT = 2
+if HAS_DRAWING then pcall(function() FONT = Drawing.Fonts.Plex end) end
+
+local function newDraw(c,p)
+    if not HAS_DRAWING then return nil end
+    local ok,o = pcall(Drawing.new,c)
+    if not ok or not o then return nil end
+    if p then for k,v in pairs(p) do pcall(function() o[k]=v end) end end
+    return o
+end
+local function killDraw(o)
+    if not o then return end
+    pcall(function() o:Remove() end) pcall(function() o:Destroy() end)
+end
+local function getGuiParent()
+    if type(gethui)=="function" then local ok,h = pcall(gethui) if ok and h then return h end end
+    local ok,cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return LP:WaitForChild("PlayerGui")
+end
+local function alpha(t) return math.clamp(1 - t/100, 0, 1) end
+
+local espStore = {}
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.RespectCanCollide = false
+
+local function isVisible(char)
+    if not cfg.UseVisibility then return true end
+    local origin = Camera.CFrame.Position
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    rayParams.FilterDescendantsInstances = {LP.Character, char}
+    return workspace:Raycast(origin, hrp.Position - origin, rayParams) == nil
+end
+
+local function getBox(char, hrp)
+    local ok, s = pcall(function() return char:GetExtentsSize() end)
+    local size = (ok and s) or Vector3.new(4,6,2)
+    local top = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, size.Y/2 + 0.4, 0))
+    local bot = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, size.Y/2, 0))
+    if top.Z <= 0 or bot.Z <= 0 then return nil end
+    local h = math.abs(bot.Y - top.Y)
+    if h < 3 then return nil end
+    local halfW = math.max(size.X, size.Z) * 0.5
+    local r = Camera:WorldToViewportPoint(hrp.Position + Camera.CFrame.RightVector * halfW)
+    local l = Camera:WorldToViewportPoint(hrp.Position - Camera.CFrame.RightVector * halfW)
+    local w = math.abs(r.X - l.X)
+    if w ~= w or w < 4 then w = h * 0.5 end
+    return top.X, math.min(top.Y, bot.Y), w, h
+end
+
+local function colorFor(plr)
+    if cfg.ColorMode == "Custom" then return cfg.CustomColor end
+    if plr.Team then return plr.TeamColor.Color end
+    return Color3.fromRGB(255,255,255)
+end
+
+local function buildState(plr)
+    local s = {corner = {}}
+    for i=1,4 do s.corner[i] = newDraw("Line", {Visible=false}) end
+    s.box    = newDraw("Square", {Filled=false, Visible=false})
+    s.hpBack = newDraw("Square", {Filled=true, Color=Color3.fromRGB(0,0,0), Visible=false})
+    s.hpFill = newDraw("Square", {Filled=true, Visible=false})
+    s.name   = newDraw("Text", {Center=true, Outline=true, Visible=false})
+    s.hpTxt  = newDraw("Text", {Center=true, Outline=true, Visible=false})
+    s.dist   = newDraw("Text", {Center=true, Outline=true, Visible=false})
+    s.tool   = newDraw("Text", {Center=true, Outline=true, Visible=false})
+    s.tracer = newDraw("Line", {Visible=false})
+    s.chams = Instance.new("Highlight")
+    s.chams.Name = "_nexus_chams"
+    s.chams.DepthMode = cfg.ChamsThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+    s.chams.Enabled = false
+    espStore[plr] = s
+    return s
+end
+
+local function hide(s)
+    if not s then return end
+    for i=1,4 do if s.corner[i] then s.corner[i].Visible=false end end
+    for _,k in ipairs({"box","hpBack","hpFill","name","hpTxt","dist","tool","tracer"}) do
+        if s[k] then s[k].Visible=false end
+    end
+    s.chams.Enabled = false
+end
+
+local function destroyState(plr)
+    local s = espStore[plr]
+    if not s then return end
+    for i=1,4 do killDraw(s.corner[i]) end
+    for _,k in ipairs({"box","hpBack","hpFill","name","hpTxt","dist","tool","tracer"}) do killDraw(s[k]) end
+    pcall(function() s.chams:Destroy() end)
+    espStore[plr] = nil
+end
+
+local function drawCorner(x,y,w,h,len,col,a,th,s)
+    local cs = {
+        {x, y, x+len, y, x, y, x, y+len},
+        {x+w-len, y, x+w, y, x+w, y, x+w, y+len},
+        {x, y+h-len, x, y+h, x, y+h, x+len, y+h},
+        {x+w-len, y+h, x+w, y+h, x+w, y+h-len, x+w, y+h},
+    }
+    for ci,cd in ipairs(cs) do
+        for li=1,2 do
+            local line = s.corner[(ci-1)*2+li]
+            if line then
+                local i2 = (li-1)*2+1
+                line.From = Vector2.new(cd[i2], cd[i2+1])
+                line.To   = Vector2.new(cd[i2+2], cd[i2+3])
+                line.Color = col line.Thickness = th line.Transparency = a line.Visible = true
+            end
+        end
+    end
+end
+
+local rayTimer = 0
+RunService.RenderStepped:Connect(function(dt)
+    if not Camera or Camera.Parent == nil then
+        Camera = workspace.CurrentCamera
+        if not Camera then return end
+    end
+    rayTimer = rayTimer + dt
+    local doRay = rayTimer >= 1/15
+    if doRay then rayTimer = 0 end
+
+    local vp = Camera.ViewportSize
+    local myChar = LP.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            local s = espStore[plr] or buildState(plr)
+            local char = plr.Character
+            local hum  = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+
+            if not cfg.Enabled or not char or not hum or not hrp or hum.Health <= 0
+                or not char.Parent
+                or (cfg.TeamCheck and LP.Team ~= nil and plr.Team == LP.Team) then
+                hide(s)
+            else
+                local dist = myHrp and (myHrp.Position - hrp.Position).Magnitude
+                    or (Camera.CFrame.Position - hrp.Position).Magnitude
+                if dist > cfg.MaxDistance then
+                    hide(s)
+                else
+                    local bx, by, bw, bh = getBox(char, hrp)
+                    if not bx then hide(s) else
+                        local col = colorFor(plr)
+                        local a = alpha(cfg.BoxTransparency)
+
+                        if doRay then s.lastVis = isVisible(char) end
+                        if cfg.UseVisibility and s.lastVis == false then
+                            col = Color3.fromRGB(255, 90, 90)
+                        end
+
+                        local chA = alpha(cfg.ChamsTransparency)
+                        if cfg.Chams and chA > 0 then
+                            if s.chams.Parent ~= char then s.chams.Parent = char end
+                            s.chams.Adornee = char
+                            s.chams.FillColor = col
+                            s.chams.OutlineColor = col
+                            s.chams.FillTransparency = chA
+                            s.chams.OutlineTransparency = math.max(chA - 0.3, 0)
+                            s.chams.Enabled = true
+                        else
+                            s.chams.Enabled = false
+                        end
+
+                        if HAS_DRAWING then
+                            if cfg.BoxStyle == "Corner" then
+                                drawCorner(bx, by, bw, bh, math.max(bw,bh)*0.18, col, a, cfg.BoxThickness, s)
+                                s.box.Visible = false
+                            elseif cfg.BoxStyle == "Full" then
+                                s.box.Size = Vector2.new(bw, bh)
+                                s.box.Position = Vector2.new(bx, by)
+                                s.box.Color = col s.box.Thickness = cfg.BoxThickness
+                                s.box.Transparency = a s.box.Visible = true
+                                for i=1,4 do s.corner[i].Visible = false end
+                            else
+                                s.box.Visible = false
+                                for i=1,4 do s.corner[i].Visible = false end
+                            end
+
+                            if cfg.ShowHealth then
+                                local frac = math.clamp(hum.Health / math.max(hum.MaxHealth,1), 0, 1)
+                                local barW = 3.5
+                                s.hpBack.Size = Vector2.new(barW, bh)
+                                s.hpBack.Position = Vector2.new(bx - barW - 4, by)
+                                s.hpBack.Transparency = math.min(a + 0.45, 1)
+                                s.hpBack.Visible = true
+                                s.hpFill.Size = Vector2.new(barW, bh * frac)
+                                s.hpFill.Position = Vector2.new(bx - barW - 4, by + bh*(1-frac))
+                                s.hpFill.Color = Color3.fromHSV(0.32*frac, 0.95, 1)
+                                s.hpFill.Transparency = a
+                                s.hpFill.Visible = true
+                            else
+                                s.hpBack.Visible = false s.hpFill.Visible = false
+                            end
+
+                            local tA = alpha(cfg.TextTransparency)
+                            local cx = bx + bw/2
+                            local headY = by - cfg.TextSize - 4
+
+                            if cfg.ShowName then
+                                s.name.Text = plr.DisplayName
+                                s.name.Position = Vector2.new(cx, headY)
+                                s.name.Size = cfg.TextSize
+                                s.name.Color = col
+                                s.name.Transparency = tA
+                                s.name.Font = FONT
+                                s.name.Visible = true
+                            else s.name.Visible = false end
+
+                            if cfg.ShowHealth then
+                                s.hpTxt.Text = string.format("%d/%d", math.floor(hum.Health), math.floor(hum.MaxHealth))
+                                s.hpTxt.Position = Vector2.new(cx, headY + cfg.TextSize + 2)
+                                s.hpTxt.Size = cfg.TextSize - 2
+                                s.hpTxt.Color = Color3.fromHSV(0.32*(hum.Health/math.max(hum.MaxHealth,1)), 0.9, 1)
+                                s.hpTxt.Transparency = tA
+                                s.hpTxt.Font = FONT
+                                s.hpTxt.Visible = true
+                            else s.hpTxt.Visible = false end
+
+                            if cfg.ShowDistance then
+                                s.dist.Text = string.format("[%d]", math.floor(dist))
+                                s.dist.Position = Vector2.new(cx, by + bh + 3)
+                                s.dist.Size = cfg.TextSize - 2
+                                s.dist.Color = Color3.fromRGB(180,180,195)
+                                s.dist.Transparency = tA
+                                s.dist.Font = FONT
+                                s.dist.Visible = true
+                            else s.dist.Visible = false end
+
+                            if cfg.ShowTool then
+                                local tool = char:FindFirstChildOfClass("Tool")
+                                if tool then
+                                    s.tool.Text = tool.Name
+                                    s.tool.Position = Vector2.new(cx, by + bh + (cfg.ShowDistance and 17 or 3))
+                                    s.tool.Size = cfg.TextSize - 2
+                                    s.tool.Color = Color3.fromRGB(200,200,210)
+                                    s.tool.Transparency = tA
+                                    s.tool.Font = FONT
+                                    s.tool.Visible = true
+                                else s.tool.Visible = false end
+                            else s.tool.Visible = false end
+
+                            if cfg.TracerStyle ~= "Off" then
+                                local from
+                                if cfg.TracerStyle == "Bottom" then from = Vector2.new(vp.X/2, vp.Y)
+                                elseif cfg.TracerStyle == "Top" then from = Vector2.new(vp.X/2, 0)
+                                else local m = UIS:GetMouseLocation() from = Vector2.new(m.X, m.Y) end
+                                s.tracer.From = from
+                                s.tracer.To = Vector2.new(cx, by + bh)
+                                s.tracer.Color = col
+                                s.tracer.Thickness = cfg.TracerThickness
+                                s.tracer.Transparency = alpha(cfg.TracerTransparency)
+                                s.tracer.Visible = true
+                            else s.tracer.Visible = false end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(destroyState)
+
+--==================== UI ====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "NexusESP_UI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 9999
+gui.Parent = getGuiParent()
+
+local T = {
+    BG=Color3.fromRGB(16,17,22), BG2=Color3.fromRGB(24,25,32), BG3=Color3.fromRGB(32,34,44),
+    Stroke=Color3.fromRGB(52,54,68), Text=Color3.fromRGB(235,236,245), TextDim=Color3.fromRGB(150,152,168),
+    Accent=Color3.fromRGB(124,108,255), AccentDim=Color3.fromRGB(70,62,140),
+    On=Color3.fromRGB(72,190,120), Off=Color3.fromRGB(48,50,62),
+}
+local function round(i,r) local c=Instance.new("UICorner") c.CornerRadius=UDim.new(0,r) c.Parent=i end
+local function stroke(i,col,t) local s=Instance.new("UIStroke") s.Color=col or T.Stroke s.Thickness=t or 1 s.Parent=i return s end
+
+local win = Instance.new("Frame")
+win.Size = UDim2.new(0,285,0,420)
+win.Position = UDim2.new(1,-305,0.5,-210)
+win.BackgroundColor3 = T.BG win.BorderSizePixel = 0 win.Active = true win.Parent = gui
+round(win,10) stroke(win)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1,0,0,36)
+titleBar.BackgroundColor3 = T.BG2 titleBar.BorderSizePixel = 0 titleBar.Parent = win
+round(titleBar,10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-50,1,0) title.Position = UDim2.new(0,12,0,0)
+title.BackgroundTransparency = 1 title.Font = Enum.Font.GothamBold title.TextSize = 14
+title.TextColor3 = T.Text title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "NEXUS  ESP  v2.1" title.Parent = titleBar
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0,26,0,26) minBtn.Position = UDim2.new(1,-32,0,5)
+minBtn.BackgroundColor3 = T.BG3 minBtn.Font = Enum.Font.GothamBold minBtn.TextSize = 14
+minBtn.TextColor3 = T.TextDim minBtn.Text = "—" minBtn.Parent = titleBar
+round(minBtn,6)
+
+local tabRow = Instance.new("Frame")
+tabRow.Size = UDim2.new(1,-16,0,30) tabRow.Position = UDim2.new(0,8,0,42)
+tabRow.BackgroundTransparency = 1 tabRow.Parent = win
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal tabLayout.Padding = UDim.new(0,6) tabLayout.Parent = tabRow
+
+local pages = Instance.new("Folder") pages.Parent = win
+local tabButtons = {}
+local function switchTab(name)
+    for n,btn in pairs(tabButtons) do
+        local on = (n==name)
+        TweenSvc:Create(btn, TweenInfo.new(0.18), {
+            BackgroundColor3 = on and T.AccentDim or T.BG3,
+            TextColor3 = on and T.Text or T.TextDim,
+        }):Play()
+    end
+    for n,page in pairs(pages:GetChildren()) do page.Visible = (n==name) end
+end
+local order = 0
+local function nextOrder() order = order + 1 return order end
+
+local function makeTab(name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0,80,1,0) btn.BackgroundColor3 = T.BG3
+    btn.Font = Enum.Font.GothamMedium btn.TextSize = 12 btn.TextColor3 = T.TextDim
+    btn.Text = name btn.AutoButtonColor = false btn.Parent = tabRow
+    round(btn,6) tabButtons[name] = btn
+    btn.MouseButton1Click:Connect(function() switchTab(name) end)
+
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name page.Size = UDim2.new(1,-16,1,-122) page.Position = UDim2.new(0,8,0,80)
+    page.BackgroundTransparency = 1 page.BorderSizePixel = 0 page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = T.Accent page.CanvasSize = UDim2.new(0,0,0,0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y page.Visible = false page.Parent = pages
+    local l = Instance.new("UIListLayout") l.Padding = UDim.new(0,5) l.Parent = page
+    local p = Instance.new("UIPadding") p.PaddingTop = UDim.new(0,2) p.Parent = page
+    return page
+end
+
+do
+    local dragging = false local dragStart, startPos
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true dragStart = input.Position startPos = win.Position end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+d.X, startPos.Y.Scale, startPos.Y.Offset+d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+end
+
+local function sectionLabel(page, text)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1,0,0,20) l.BackgroundTransparency = 1
+    l.Font = Enum.Font.GothamBold l.TextSize = 11 l.TextColor3 = T.Accent
+    l.TextXAlignment = Enum.TextXAlignment.Left l.Text = string.upper(text)
+    l.LayoutOrder = nextOrder() l.Parent = page
+end
+
+local function makeToggle(page, label, initial, onChange)
+    local state = initial
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1,0,0,28) holder.BackgroundColor3 = T.BG2
+    holder.BorderSizePixel = 0 holder.LayoutOrder = nextOrder() holder.Parent = page
+    round(holder,6)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1,0,1,0) btn.BackgroundTransparency = 1
+    btn.Font = Enum.Font.Gotham btn.TextSize = 13 btn.TextColor3 = T.Text
+    btn.TextXAlignment = Enum.TextXAlignment.Left btn.Text = "  "..label btn.Parent = holder
+    local pill = Instance.new("Frame")
+    pill.Size = UDim2.new(0,36,0,18) pill.Position = UDim2.new(1,-44,0.5,-9)
+    pill.BackgroundColor3 = state and T.On or T.Off pill.BorderSizePixel = 0 pill.Parent = holder
+    round(pill,9)
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0,14,0,14)
+    knob.Position = state and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
+    knob.BackgroundColor3 = Color3.new(1,1,1) knob.BorderSizePixel = 0 knob.Parent = pill
+    round(knob,7)
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        TweenSvc:Create(pill, TweenInfo.new(0.15), {BackgroundColor3 = state and T.On or T.Off}):Play()
+        TweenSvc:Create(knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+            Position = state and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)}):Play()
+        pcall(onChange, state)
+    end)
+end
+
+local function makeSlider(page, label, minV, maxV, defaultV, decimals, suffix, onChange)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1,0,0,38) holder.BackgroundColor3 = T.BG2
+    holder.BorderSizePixel = 0 holder.LayoutOrder = nextOrder() holder.Parent = page
+    round(holder,6)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1,-16,0,16) lbl.Position = UDim2.new(0,10,0,4)
+    lbl.BackgroundTransparency = 1 lbl.Font = Enum.Font.Gotham lbl.TextSize = 12
+    lbl.TextColor3 = T.TextDim lbl.TextXAlignment = Enum.TextXAlignment.Left lbl.Parent = holder
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1,-20,0,5) track.Position = UDim2.new(0,10,0,27)
+    track.BackgroundColor3 = T.Off track.BorderSizePixel = 0 track.Parent = holder
+    round(track,3)
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0,0,1,0) fill.BackgroundColor3 = T.Accent
+    fill.BorderSizePixel = 0 fill.Parent = track round(fill,3)
+    local hit = Instance.new("TextButton")
+    hit.Size = UDim2.new(1,0,0,22) hit.Position = UDim2.new(0,0,0,16)
+    hit.BackgroundTransparency = 1 hit.Text = "" hit.Parent = holder
+    local val = math.clamp(defaultV, minV, maxV) local dragging = false
+    local function paint()
+        local t = (val-minV)/(maxV-minV)
+        fill.Size = UDim2.new(math.clamp(t,0,1),0,1,0)
+        local m = 10^decimals
+        local v = math.floor(val*m+0.5)/m
+        lbl.Text = label.."  "..tostring(v)..(suffix or "")
+    end
+    local function setFromX(px)
+        local rel = math.clamp((px - track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1), 0, 1)
+        local v = minV + rel*(maxV-minV)
+        local m = 10^decimals
+        v = math.floor(v*m+0.5)/m
+        if v ~= val then val = v paint() pcall(onChange, v) end
+    end
+    paint()
+    hit.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true setFromX(input.Position.X) end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    task.spawn(function()
+        while holder.Parent do
+            RunService.RenderStepped:Wait()
+            if dragging then setFromX(UIS:GetMouseLocation().X) end
+        end
+    end)
+end
+
+local function makeDropdown(page, label, options, defaultOpt, onChange)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1,0,0,28) holder.BackgroundColor3 = T.BG2
+    holder.BorderSizePixel = 0 holder.LayoutOrder = nextOrder() holder.Parent = page
+    round(holder,6)
+    local current = defaultOpt local open = false local listFrame
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1,0,1,0) btn.BackgroundTransparency = 1
+    btn.Font = Enum.Font.Gotham btn.TextSize = 13 btn.TextColor3 = T.Text
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Text = "  "..label..":  "..current btn.Parent = holder
+    local function closeList()
+        if listFrame then listFrame:Destroy() listFrame = nil open = false end
+    end
+    btn.MouseButton1Click:Connect(function()
+        if open then closeList() return end
+        open = true
+        listFrame = Instance.new("Frame")
+        listFrame.Size = UDim2.new(1,0,0,math.min(#options,5)*26+6)
+        listFrame.Position = UDim2.new(0,0,1,4)
+        listFrame.BackgroundColor3 = T.BG3 listFrame.BorderSizePixel = 0
+        listFrame.ZIndex = 10 listFrame.Parent = holder
+        round(listFrame,6)
+        local l = Instance.new("UIListLayout") l.Padding = UDim.new(0,2) l.Parent = listFrame
+        local p = Instance.new("UIPadding") p.PaddingTop = UDim.new(0,3) p.Parent = listFrame
+        for _,opt in ipairs(options) do
+            local ob = Instance.new("TextButton")
+            ob.Size = UDim2.new(1,0,0,24)
+            ob.BackgroundColor3 = (opt==current) and T.AccentDim or T.BG2
+            ob.Font = Enum.Font.Gotham ob.TextSize = 12
+            ob.TextColor3 = (opt==current) and T.Text or T.TextDim
+            ob.Text = "  "..opt ob.AutoButtonColor = false ob.ZIndex = 11 ob.Parent = listFrame
+            round(ob,4)
+            ob.MouseButton1Click:Connect(function()
+                current = opt
+                btn.Text = "  "..label..":  "..opt
+                closeList() pcall(onChange, opt)
+            end)
+        end
+    end)
+end
+
+local espPage = makeTab("ESP")
+local miscPage = makeTab("Misc")
+
+sectionLabel(espPage, "General")
+makeToggle(espPage, "ESP Enabled", cfg.Enabled, function(v) cfg.Enabled = v end)
+makeDropdown(espPage, "Box Style", {"Corner","Full","Highlight"}, cfg.BoxStyle, function(v) cfg.BoxStyle = v end)
+makeDropdown(espPage, "Color Mode", {"Team","Custom"}, cfg.ColorMode, function(v) cfg.ColorMode = v end)
+sectionLabel(espPage, "Box")
+makeSlider(espPage, "Transparency", 0, 100, cfg.BoxTransparency, 0, "%", function(v) cfg.BoxTransparency = v end)
+makeSlider(espPage, "Thickness", 1, 4, cfg.BoxThickness, 1, "px", function(v) cfg.BoxThickness = v end)
+sectionLabel(espPage, "Tracers")
+makeDropdown(espPage, "Tracer Origin", {"Off","Bottom","Top","Mouse"}, cfg.TracerStyle, function(v) cfg.TracerStyle = v end)
+makeSlider(espPage, "Tracer Opacity", 0, 100, cfg.TracerTransparency, 0, "%", function(v) cfg.TracerTransparency = v end)
+sectionLabel(espPage, "Text")
+makeToggle(espPage, "Show Name (above head)", cfg.ShowName, function(v) cfg.ShowName = v end)
+makeToggle(espPage, "Health Bar", cfg.ShowHealth, function(v) cfg.ShowHealth = v end)
+makeToggle(espPage, "Health Text (above head)", true, function(v) cfg.ShowHealthText = v end)
+makeToggle(espPage, "Show Tool", cfg.ShowTool, function(v) cfg.ShowTool = v end)
+makeToggle(espPage, "Show Distance", cfg.ShowDistance, function(v) cfg.ShowDistance = v end)
+makeSlider(espPage, "Text Size", 10, 22, cfg.TextSize, 0, "px", function(v) cfg.TextSize = v end)
+makeSlider(espPage, "Text Opacity", 0, 100, cfg.TextTransparency, 0, "%", function(v) cfg.TextTransparency = v end)
+sectionLabel(espPage, "Chams")
+makeToggle(espPage, "Chams (3D fill)", cfg.Chams, function(v) cfg.Chams = v end)
+makeSlider(espPage, "Chams Opacity", 0, 100, cfg.ChamsTransparency, 0, "%", function(v) cfg.ChamsTransparency = v end)
+
+sectionLabel(miscPage, "Filters")
+makeToggle(miscPage, "Team Check", cfg.TeamCheck, function(v) cfg.TeamCheck = v end)
+makeToggle(miscPage, "Visibility Check", cfg.UseVisibility, function(v) cfg.UseVisibility = v end)
+makeSlider(miscPage, "Max Distance", 50, 5000, cfg.MaxDistance, 0, " studs", function(v) cfg.MaxDistance = v end)
+
+sectionLabel(miscPage, "Infinite Yield")
+local iyBtn = Instance.new("TextButton")
+iyBtn.Size = UDim2.new(1,0,0,28) iyBtn.BackgroundColor3 = T.BG3 iyBtn.AutoButtonColor = true
+iyBtn.Font = Enum.Font.GothamMedium iyBtn.TextSize = 13 iyBtn.TextColor3 = T.Text
+iyBtn.Text = "Reload Infinite Yield  [ ; ]"
+iyBtn.LayoutOrder = nextOrder() iyBtn.Parent = miscPage round(iyBtn,6)
+iyBtn.MouseButton1Click:Connect(function()
+    pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+    end)
+end)
+
+sectionLabel(miscPage, "Danger")
+local unloadBtn = Instance.new("TextButton")
+unloadBtn.Size = UDim2.new(1,0,0,28) unloadBtn.BackgroundColor3 = Color3.fromRGB(80,32,38)
+unloadBtn.AutoButtonColor = true unloadBtn.Font = Enum.Font.GothamMedium
+unloadBtn.TextSize = 13 unloadBtn.TextColor3 = Color3.fromRGB(255,180,180)
+unloadBtn.Text = "Unload Everything"
+unloadBtn.LayoutOrder = nextOrder() unloadBtn.Parent = miscPage round(unloadBtn,6)
+unloadBtn.MouseButton1Click:Connect(function()
+    for plr in pairs(espStore) do destroyState(plr) end
+    gui:Destroy()
+end)
+
+switchTab("ESP")
+
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    TweenSvc:Create(win, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
+        Size = minimized and UDim2.new(0,285,0,36) or UDim2.new(0,285,0,420)
+    }):Play()
+    minBtn.Text = minimized and "+" or "—"
+end)
+
+local floatBtn = Instance.new("TextButton")
+floatBtn.Size = UDim2.new(0,38,0,38) floatBtn.Position = UDim2.new(0,14,0.5,-19)
+floatBtn.BackgroundColor3 = T.BG2 floatBtn.Font = Enum.Font.GothamBold floatBtn.TextSize = 16
+floatBtn.TextColor3 = T.Accent floatBtn.Text = "N" floatBtn.AutoButtonColor = true floatBtn.Parent = gui
+round(floatBtn,10) stroke(floatBtn, T.Accent, 1.5)
+
+local menuVisible = true
+local function toggleMenu()
+    menuVisible = not menuVisible
+    win.Visible = menuVisible
+end
+floatBtn.MouseButton1Click:Connect(toggleMenu)
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == cfg.MenuKey then toggleMenu() end
+end)
+
+--==================== INFINITE YIELD ====================
+task.spawn(function()
+    local ok, err = pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+    end)
+    if ok then print("[NEXUS] IY loaded | press ; for console")
+    else warn("[NEXUS] IY failed: "..tostring(err)) end
+end)
+
+print("[NEXUS] v2.1 ready | Drawing API: "..tostring(HAS_DRAWING))
