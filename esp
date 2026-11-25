@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v4.0  (Players + Objects + Strong Club Mod)
+--//   NEXUS ESP v4.1  (Aggressive Spiked Club Reach)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -42,8 +42,8 @@ local cfg = {
 
     -- Spiked Club
     ClubReachEnabled   = true,
-    ClubReachMult      = 3.5,
-    ClubCooldown       = 0.25,
+    ClubReachMult      = 4,
+    ClubCooldown       = 0.2,
 
     MenuKey            = Enum.KeyCode.RightShift,
 }
@@ -78,7 +78,7 @@ local function alpha(t)
     return math.clamp(1 - t * 0.01, 0, 1)
 end
 
---═════════════════ STRONG SPIKED CLUB MOD ═════════════════
+--═════════════════ AGGRESSIVE SPIKED CLUB ═════════════════
 local bigHitbox = nil
 
 local function getSpikedClub()
@@ -96,6 +96,7 @@ end
 
 local function applyClubMods()
     local tool = getSpikedClub()
+
     if not tool then
         if bigHitbox then
             bigHitbox:Destroy()
@@ -127,28 +128,27 @@ local function applyClubMods()
         return
     end
 
-    -- Real bigger hitbox
     local handle = tool:FindFirstChild("Handle")
     if handle and handle:IsA("BasePart") then
         if not bigHitbox or bigHitbox.Parent ~= handle then
             if bigHitbox then bigHitbox:Destroy() end
 
             bigHitbox = Instance.new("Part")
-            bigHitbox.Name = "NexusHitbox"
+            bigHitbox.Name = "NexusReach"
             bigHitbox.Anchored = false
             bigHitbox.CanCollide = false
             bigHitbox.Massless = true
             bigHitbox.Transparency = 1
-            bigHitbox.Size = handle.Size * Vector3.new(cfg.ClubReachMult, 1.3, cfg.ClubReachMult)
+            bigHitbox.Size = Vector3.new(12 * cfg.ClubReachMult, 8, 12 * cfg.ClubReachMult)
             bigHitbox.Parent = handle
 
             local weld = Instance.new("Weld")
             weld.Part0 = handle
             weld.Part1 = bigHitbox
-            weld.C0 = CFrame.new()
+            weld.C0 = CFrame.new(0, 0, -2)
             weld.Parent = bigHitbox
         else
-            bigHitbox.Size = handle.Size * Vector3.new(cfg.ClubReachMult, 1.3, cfg.ClubReachMult)
+            bigHitbox.Size = Vector3.new(12 * cfg.ClubReachMult, 8, 12 * cfg.ClubReachMult)
         end
     end
 end
@@ -156,27 +156,27 @@ end
 -- Force cooldown very fast
 task.spawn(function()
     while true do
-        task.wait(0.05)
+        task.wait(0.03)
         local tool = getSpikedClub()
         if tool then
             local cd = tool:FindFirstChild("Cooldowntime")
-            if cd and cd:IsA("NumberValue") and math.abs(cd.Value - cfg.ClubCooldown) > 0.01 then
+            if cd and cd:IsA("NumberValue") then
                 cd.Value = cfg.ClubCooldown
             end
         end
     end
 end)
 
--- Normal apply
+-- Apply reach
 task.spawn(function()
     while true do
-        task.wait(0.35)
+        task.wait(0.3)
         applyClubMods()
     end
 end)
 
 LP.CharacterAdded:Connect(function()
-    task.wait(1)
+    task.wait(1.2)
     applyClubMods()
 end)
 
@@ -1216,7 +1216,7 @@ makeSlider(secObj, "Max Distance", 50, 5000, cfg.ObjectMaxDist, 0, "", function(
 
 -- WEAPON
 local secClub = makeSection(weaponTab, "Spiked Club")
-makeToggle(secClub, "Extended Reach", "bigger hitbox", cfg.ClubReachEnabled, function(v)
+makeToggle(secClub, "Extended Reach", "aggressive hitbox", cfg.ClubReachEnabled, function(v)
     cfg.ClubReachEnabled = v
     applyClubMods()
 end)
@@ -1350,4 +1350,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v4.0 | Strong Spiked Club Mod loaded")
+print("[NEXUS] v4.1 | Aggressive Spiked Club Reach loaded")
