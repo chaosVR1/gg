@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v3.9  (Players + Objects + Spiked Club)
+--//   NEXUS ESP v4.0  (Players + Objects + Strong Club Mod)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -42,8 +42,8 @@ local cfg = {
 
     -- Spiked Club
     ClubReachEnabled   = true,
-    ClubReachMult      = 3,
-    ClubCooldown       = 0.3,
+    ClubReachMult      = 3.5,
+    ClubCooldown       = 0.25,
 
     MenuKey            = Enum.KeyCode.RightShift,
 }
@@ -78,71 +78,100 @@ local function alpha(t)
     return math.clamp(1 - t * 0.01, 0, 1)
 end
 
---═════════════════ SPIKED CLUB MOD ═════════════════
+--═════════════════ STRONG SPIKED CLUB MOD ═════════════════
+local bigHitbox = nil
+
 local function getSpikedClub()
     local char = LP.Character
     if char then
-        local t = char:FindFirstChild("Spiked club")
+        local t = char:FindFirstChild("Spiked club") or char:FindFirstChild("Spiked Club")
         if t then return t end
     end
     local bp = LP:FindFirstChild("Backpack")
     if bp then
-        return bp:FindFirstChild("Spiked club")
+        return bp:FindFirstChild("Spiked club") or bp:FindFirstChild("Spiked Club")
     end
     return nil
 end
 
 local function applyClubMods()
     local tool = getSpikedClub()
-    if not tool then return end
+    if not tool then
+        if bigHitbox then
+            bigHitbox:Destroy()
+            bigHitbox = nil
+        end
+        return
+    end
 
-    -- Cooldown
+    -- Force Cooldown
     local cd = tool:FindFirstChild("Cooldowntime")
     if cd and cd:IsA("NumberValue") then
         cd.Value = cfg.ClubCooldown
     end
 
-    if not cfg.ClubReachEnabled then return end
-
-    -- Reach via NumberValues
-    for _, name in ipairs({"Reach", "Range", "HitRange", "AttackRange", "Distance", "Size"}) do
-        local v = tool:FindFirstChild(name)
-        if v and v:IsA("NumberValue") then
-            if not v:GetAttribute("Original") then
-                v:SetAttribute("Original", v.Value)
+    for _, v in ipairs(tool:GetDescendants()) do
+        if v:IsA("NumberValue") then
+            local n = v.Name:lower()
+            if n:find("cool") or n:find("delay") or n:find("cd") then
+                v.Value = cfg.ClubCooldown
             end
-            v.Value = v:GetAttribute("Original") * cfg.ClubReachMult
         end
     end
 
-    -- Handle size method
+    if not cfg.ClubReachEnabled then
+        if bigHitbox then
+            bigHitbox:Destroy()
+            bigHitbox = nil
+        end
+        return
+    end
+
+    -- Real bigger hitbox
     local handle = tool:FindFirstChild("Handle")
     if handle and handle:IsA("BasePart") then
-        if not handle:GetAttribute("OriginalSize") then
-            handle:SetAttribute("OriginalSize", handle.Size)
-        end
-        local original = handle:GetAttribute("OriginalSize")
-        handle.Size = original * Vector3.new(cfg.ClubReachMult, 1, cfg.ClubReachMult)
-    end
+        if not bigHitbox or bigHitbox.Parent ~= handle then
+            if bigHitbox then bigHitbox:Destroy() end
 
-    -- Deep search
-    for _, obj in ipairs(tool:GetDescendants()) do
-        if obj:IsA("NumberValue") and (obj.Name:lower():find("reach") or obj.Name:lower():find("range")) then
-            if not obj:GetAttribute("Original") then
-                obj:SetAttribute("Original", obj.Value)
-            end
-            obj.Value = obj:GetAttribute("Original") * cfg.ClubReachMult
+            bigHitbox = Instance.new("Part")
+            bigHitbox.Name = "NexusHitbox"
+            bigHitbox.Anchored = false
+            bigHitbox.CanCollide = false
+            bigHitbox.Massless = true
+            bigHitbox.Transparency = 1
+            bigHitbox.Size = handle.Size * Vector3.new(cfg.ClubReachMult, 1.3, cfg.ClubReachMult)
+            bigHitbox.Parent = handle
+
+            local weld = Instance.new("Weld")
+            weld.Part0 = handle
+            weld.Part1 = bigHitbox
+            weld.C0 = CFrame.new()
+            weld.Parent = bigHitbox
+        else
+            bigHitbox.Size = handle.Size * Vector3.new(cfg.ClubReachMult, 1.3, cfg.ClubReachMult)
         end
     end
 end
 
--- Keep applying
+-- Force cooldown very fast
 task.spawn(function()
     while true do
-        task.wait(1.2)
-        if cfg.ClubReachEnabled or true then
-            applyClubMods()
+        task.wait(0.05)
+        local tool = getSpikedClub()
+        if tool then
+            local cd = tool:FindFirstChild("Cooldowntime")
+            if cd and cd:IsA("NumberValue") and math.abs(cd.Value - cfg.ClubCooldown) > 0.01 then
+                cd.Value = cfg.ClubCooldown
+            end
         end
+    end
+end)
+
+-- Normal apply
+task.spawn(function()
+    while true do
+        task.wait(0.35)
+        applyClubMods()
     end
 end)
 
@@ -1185,9 +1214,9 @@ makeToggle(secObj, "Landmines", "red boxes", cfg.ShowLandmines, function(v) cfg.
 makeToggle(secObj, "Remote Explosives", "orange boxes", cfg.ShowRemotes, function(v) cfg.ShowRemotes = v end)
 makeSlider(secObj, "Max Distance", 50, 5000, cfg.ObjectMaxDist, 0, "", function(v) cfg.ObjectMaxDist = v end)
 
--- WEAPON (Spiked Club)
+-- WEAPON
 local secClub = makeSection(weaponTab, "Spiked Club")
-makeToggle(secClub, "Extended Reach", "increase attack range", cfg.ClubReachEnabled, function(v)
+makeToggle(secClub, "Extended Reach", "bigger hitbox", cfg.ClubReachEnabled, function(v)
     cfg.ClubReachEnabled = v
     applyClubMods()
 end)
@@ -1203,7 +1232,7 @@ end)
 -- MISC
 local secFl = makeSection(miscTab, "Filters")
 makeToggle(secFl, "Team Check", "hide teammates", cfg.TeamCheck, function(v) cfg.TeamCheck = v end)
-makeToggle(secFl, "Visibility Check", "red behind walls (costs FPS)", cfg.UseVisibility, function(v) cfg.UseVisibility = v end)
+makeToggle(secFl, "Visibility Check", "red behind walls", cfg.UseVisibility, function(v) cfg.UseVisibility = v end)
 makeSlider(secFl, "Max Distance", 50, 5000, cfg.MaxDistance, 0, "", function(v) cfg.MaxDistance = v end)
 
 local secIY = makeSection(miscTab, "Infinite Yield")
@@ -1240,6 +1269,7 @@ unloadBtn.MouseButton1Click:Connect(function()
     if connection then connection:Disconnect() end
     for plr in pairs(espStore) do destroyState(plr) end
     for obj in pairs(objStore) do destroyObj(obj) end
+    if bigHitbox then bigHitbox:Destroy() end
     gui:Destroy()
 end)
 
@@ -1320,4 +1350,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v3.9 | Players + Objects + Spiked Club Reach/Cooldown")
+print("[NEXUS] v4.0 | Strong Spiked Club Mod loaded")
