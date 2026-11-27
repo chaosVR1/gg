@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v4.4  (C4 Support + No 2D Object Boxes)
+--//   NEXUS ESP v4.5  (Fixed Object ESP)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -283,24 +283,19 @@ local function drawCorners(x, y, w, h, len, col, a, th, s)
     end
 end
 
---═════════════════ OBJECT ESP (C4 Support) ═════════════════
+--═════════════════ OBJECT ESP (FIXED) ═════════════════
 local objStore = {}
 local objects = {}
 
 local function isTarget(name)
-    name = string.lower(name or "")
+    if not name then return nil end
+    name = string.lower(name)
     
-    -- Landmines
     if name:find("landmine") or (name:find("mine") and not name:find("remote") and not name:find("c4")) then
         return "mine"
     end
     
-    -- Remote Explosives / C4
-    if name:find("remote") 
-        or name:find("explosive") 
-        or name:find("c4") 
-        or name:find("bomb")
-        or name:find("reak") then
+    if name:find("remote") or name:find("explosive") or name:find("c4") or name:find("bomb") or name:find("reak") then
         return "remote"
     end
     
@@ -308,35 +303,37 @@ local function isTarget(name)
 end
 
 local function getPart(obj)
+    if not obj then return nil end
     if obj:IsA("BasePart") then return obj end
-    
-    -- Prefer c4model
-    local part = obj:FindFirstChild("c4model")
-        or obj:FindFirstChild("Handle")
-        or obj:FindFirstChild("Bomb")
-        or obj:FindFirstChild("Landmine")
-        or obj:FindFirstChild("PrimaryPart")
-        or obj.PrimaryPart
-        
-    if part and part:IsA("BasePart") then return part end
-    
+
+    local names = {"c4model", "Handle", "Bomb", "Landmine", "PrimaryPart", "MeshPart", "Part"}
+    for _, n in ipairs(names) do
+        local p = obj:FindFirstChild(n)
+        if p and p:IsA("BasePart") then return p end
+    end
+
+    if obj.PrimaryPart and obj.PrimaryPart:IsA("BasePart") then
+        return obj.PrimaryPart
+    end
+
     for _, v in ipairs(obj:GetDescendants()) do
-        if v:IsA("BasePart") then return v end
+        if v:IsA("BasePart") then
+            return v
+        end
     end
     return nil
 end
 
 local function buildObj(obj)
     local s = {
-        box  = newDraw("Square", {Filled = false, Thickness = 1.4, Visible = false}),
-        name = newDraw("Text", {Center = true, Outline = true, Size = 13, Font = FONT, Visible = false}),
-        dist = newDraw("Text", {Center = true, Outline = true, Size = 11, Font = FONT, Visible = false}),
+        name  = newDraw("Text", {Center = true, Outline = true, Size = 13, Font = FONT, Visible = false}),
+        dist  = newDraw("Text", {Center = true, Outline = true, Size = 11, Font = FONT, Visible = false}),
         chams = Instance.new("Highlight")
     }
     s.chams.Name = "_nexus_obj_chams"
     s.chams.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    s.chams.FillTransparency = 0.55
-    s.chams.OutlineTransparency = 0.25
+    s.chams.FillTransparency = 0.5
+    s.chams.OutlineTransparency = 0.2
     s.chams.Enabled = false
     objStore[obj] = s
     return s
@@ -344,50 +341,66 @@ end
 
 local function hideObj(s)
     if not s then return end
-    s.box.Visible = false
-    s.name.Visible = false
-    s.dist.Visible = false
+    if s.name then s.name.Visible = false end
+    if s.dist then s.dist.Visible = false end
     if s.chams then s.chams.Enabled = false end
 end
 
 local function destroyObj(obj)
     local s = objStore[obj]
     if not s then return end
-    killDraw(s.box)
     killDraw(s.name)
     killDraw(s.dist)
-    pcall(function() s.chams:Destroy() end)
+    pcall(function() if s.chams then s.chams:Destroy() end end)
     objStore[obj] = nil
 end
 
 local function refreshObjects()
     local found = {}
-    local seenParts = {}
+    local seen = {}
+
+    local function tryAdd(obj)
+        if not obj or seen[obj] then return end
+        local kind = isTarget(obj.Name)
+        if not kind then return end
+
+        local part = getPart(obj)
+        if not part then return end
+
+        if seen[part] then return end
+        seen[part] = true
+        seen[obj] = true
+
+        found[obj] = {
+            part = part,
+            kind = kind
+        }
+    end
 
     local function scan(parent, depth)
-        if depth > 5 then return end
-        for _, obj in ipairs(parent:GetChildren()) do
-            local kind = isTarget(obj.Name)
-            if kind then
-                local part = getPart(obj)
-                if part and not seenParts[part] then
-                    seenParts[part] = true
-                    found[obj] = {part = part, kind = kind}
-                end
-            end
-            scan(obj, depth + 1)
+        if not parent or depth > 6 then return end
+        for _, child in ipairs(parent:GetChildren()) do
+            tryAdd(child)
+            scan(child, depth + 1)
         end
     end
 
     scan(workspace, 0)
-    for _, name in ipairs({"Projectiles", "Thrown", "Deployables", "Mines", "Explosives", "Debris", "Effects", "Tools"}) do
+
+    local folders = {"Projectiles", "Thrown", "Deployables", "Mines", "Explosives", "Debris", "Effects", "Tools", "Map"}
+    for _, name in ipairs(folders) do
         local folder = workspace:FindFirstChild(name)
-        if folder then scan(folder, 0) end
+        if folder then
+            scan(folder, 0)
+        end
     end
 
     for obj in pairs(objStore) do
-        if not found[obj] then destroyObj(obj) end
+        if not found[obj] then
+            destroyObj(obj)
+        end
     end
+
     objects = found
 end
 
@@ -595,8 +608,8 @@ local connection = RunService.Heartbeat:Connect(function(dt)
         for _, s in pairs(espStore) do hide(s) end
     end
 
-    -- Object ESP (No 2D Box + C4 Support)
-    if cfg.ObjectESP and HAS_DRAWING then
+    -- Object ESP
+    if cfg.ObjectESP then
         for obj, data in pairs(objects) do
             local part = data.part
             if not part or not part.Parent then
@@ -620,45 +633,48 @@ local connection = RunService.Heartbeat:Connect(function(dt)
             end
 
             local sp, onScreen = Camera:WorldToViewportPoint(pos)
-            if not onScreen or sp.Z < 0.5 then
+            if not onScreen or sp.Z < 0.1 then
                 hideObj(s)
                 continue
             end
 
-            local col = data.kind == "mine" 
-                and Color3.fromRGB(255, 60, 60) 
-                or Color3.fromRGB(255, 160, 30)
-
-            -- No 2D box
-            s.box.Visible = false
+            local col = data.kind == "mine" and Color3.fromRGB(255, 55, 55) or Color3.fromRGB(255, 165, 40)
 
             -- Name
-            s.name.Text = obj.Name
-            s.name.Position = Vector2.new(sp.X, sp.Y - 18)
-            s.name.Color = col
-            s.name.Visible = true
+            if s.name then
+                s.name.Text = obj.Name
+                s.name.Position = Vector2.new(sp.X, sp.Y - 20)
+                s.name.Color = col
+                s.name.Visible = true
+            end
 
             -- Distance
-            s.dist.Text = math.floor(dist) .. "m"
-            s.dist.Position = Vector2.new(sp.X, sp.Y + 2)
-            s.dist.Color = Color3.fromRGB(220, 220, 230)
-            s.dist.Visible = true
+            if s.dist then
+                s.dist.Text = math.floor(dist) .. "m"
+                s.dist.Position = Vector2.new(sp.X, sp.Y + 2)
+                s.dist.Color = Color3.fromRGB(220, 220, 230)
+                s.dist.Visible = true
+            end
 
             -- Chams
             if cfg.ObjectChams and s.chams then
-                if s.chams.Parent ~= obj then
-                    s.chams.Parent = obj
-                end
-                s.chams.Adornee = obj
-                s.chams.FillColor = col
-                s.chams.OutlineColor = col
-                s.chams.Enabled = true
+                pcall(function()
+                    if s.chams.Parent ~= obj then
+                        s.chams.Parent = obj
+                    end
+                    s.chams.Adornee = obj
+                    s.chams.FillColor = col
+                    s.chams.OutlineColor = col
+                    s.chams.Enabled = true
+                end)
             else
                 if s.chams then s.chams.Enabled = false end
             end
         end
     else
-        for _, s in pairs(objStore) do hideObj(s) end
+        for _, s in pairs(objStore) do
+            hideObj(s)
+        end
     end
 end)
 
@@ -1376,4 +1392,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v4.4 | C4 Support + Object Chams")
+print("[NEXUS] v4.5 | Fixed Object ESP")
