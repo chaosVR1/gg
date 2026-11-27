@@ -1,5 +1,5 @@
 --// ═══════════════════════════════════════════════════
---//   NEXUS ESP v4.2  (Fixed Object ESP + Chams)
+--//   NEXUS ESP v4.4  (C4 Support + No 2D Object Boxes)
 --//   RightShift = menu  |  ; = Infinite Yield
 --// ═══════════════════════════════════════════════════
 
@@ -283,30 +283,43 @@ local function drawCorners(x, y, w, h, len, col, a, th, s)
     end
 end
 
---═════════════════ OBJECT ESP (1 box + Chams) ═════════════════
+--═════════════════ OBJECT ESP (C4 Support) ═════════════════
 local objStore = {}
 local objects = {}
 
 local function isTarget(name)
     name = string.lower(name or "")
-    if name:find("landmine") or (name:find("mine") and not name:find("remote")) then
+    
+    -- Landmines
+    if name:find("landmine") or (name:find("mine") and not name:find("remote") and not name:find("c4")) then
         return "mine"
     end
-    if (name:find("remote") and (name:find("explosive") or name:find("c4") or name:find("bomb"))) 
-        or name == "c4" or name == "bomb" then
+    
+    -- Remote Explosives / C4
+    if name:find("remote") 
+        or name:find("explosive") 
+        or name:find("c4") 
+        or name:find("bomb")
+        or name:find("reak") then
         return "remote"
     end
+    
     return nil
 end
 
 local function getPart(obj)
     if obj:IsA("BasePart") then return obj end
-    local part = obj:FindFirstChild("Handle")
+    
+    -- Prefer c4model
+    local part = obj:FindFirstChild("c4model")
+        or obj:FindFirstChild("Handle")
         or obj:FindFirstChild("Bomb")
         or obj:FindFirstChild("Landmine")
         or obj:FindFirstChild("PrimaryPart")
         or obj.PrimaryPart
+        
     if part and part:IsA("BasePart") then return part end
+    
     for _, v in ipairs(obj:GetDescendants()) do
         if v:IsA("BasePart") then return v end
     end
@@ -582,7 +595,7 @@ local connection = RunService.Heartbeat:Connect(function(dt)
         for _, s in pairs(espStore) do hide(s) end
     end
 
-    -- Object ESP
+    -- Object ESP (No 2D Box + C4 Support)
     if cfg.ObjectESP and HAS_DRAWING then
         for obj, data in pairs(objects) do
             local part = data.part
@@ -612,30 +625,22 @@ local connection = RunService.Heartbeat:Connect(function(dt)
                 continue
             end
 
-            local scale = 160 / math.max(sp.Z, 1)
-            local size = math.clamp(26 * scale, 10, 60)
-            local x = sp.X - size * 0.5
-            local y = sp.Y - size * 0.5
-
             local col = data.kind == "mine" 
                 and Color3.fromRGB(255, 60, 60) 
                 or Color3.fromRGB(255, 160, 30)
 
-            -- Single box
-            s.box.Size = Vector2.new(size, size)
-            s.box.Position = Vector2.new(x, y)
-            s.box.Color = col
-            s.box.Visible = true
+            -- No 2D box
+            s.box.Visible = false
 
             -- Name
             s.name.Text = obj.Name
-            s.name.Position = Vector2.new(sp.X, y - 16)
+            s.name.Position = Vector2.new(sp.X, sp.Y - 18)
             s.name.Color = col
             s.name.Visible = true
 
             -- Distance
             s.dist.Text = math.floor(dist) .. "m"
-            s.dist.Position = Vector2.new(sp.X, y + size + 2)
+            s.dist.Position = Vector2.new(sp.X, sp.Y + 2)
             s.dist.Color = Color3.fromRGB(220, 220, 230)
             s.dist.Visible = true
 
@@ -1230,8 +1235,8 @@ makeSlider(secTxt, "Text Opacity", 0, 100, cfg.TextTransparency, 0, "%", functio
 -- OBJECTS
 local secObj = makeSection(objTab, "Object ESP")
 makeToggle(secObj, "Enabled", "show landmines & remotes", cfg.ObjectESP, function(v) cfg.ObjectESP = v end)
-makeToggle(secObj, "Landmines", "red boxes", cfg.ShowLandmines, function(v) cfg.ShowLandmines = v end)
-makeToggle(secObj, "Remote Explosives", "orange boxes", cfg.ShowRemotes, function(v) cfg.ShowRemotes = v end)
+makeToggle(secObj, "Landmines", "red glow", cfg.ShowLandmines, function(v) cfg.ShowLandmines = v end)
+makeToggle(secObj, "Remote Explosives", "orange glow (C4)", cfg.ShowRemotes, function(v) cfg.ShowRemotes = v end)
 makeToggle(secObj, "Object Chams", "3D glow on bombs", cfg.ObjectChams, function(v) cfg.ObjectChams = v end)
 makeSlider(secObj, "Max Distance", 50, 5000, cfg.ObjectMaxDist, 0, "", function(v) cfg.ObjectMaxDist = v end)
 
@@ -1371,4 +1376,4 @@ task.spawn(function()
     end)
 end)
 
-print("[NEXUS] v4.2 | Fixed Object ESP (1 box + Chams)")
+print("[NEXUS] v4.4 | C4 Support + Object Chams")
