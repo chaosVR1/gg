@@ -2,7 +2,7 @@ local function expandHitbox(model)
     if not model or model:GetAttribute("NexusExpanded") then return end
     model:SetAttribute("NexusExpanded", true)
 
-    local size = 16 -- try bigger
+    local size = 126 -- try bigger
 
     local parts = {"HumanoidRootPart", "Torso", "Head", "LeftArm", "RightArm", "LeftLeg", "RightLeg"}
     for _, name in ipairs(parts) do
