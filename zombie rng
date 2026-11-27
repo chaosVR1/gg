@@ -1,45 +1,62 @@
 --// ═══════════════════════════════════════════════════
---//   Undead Hitbox Expander + Kill Aura
+--//   Undead Hitbox + ESP + Speed  (Optimized + GUI)
 --// ═══════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
 local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
 --================ SETTINGS ================
-local Settings = {
-    HitboxSize = Vector3.new(14, 14, 14),   -- Size of expanded hitbox
-    HitboxTransparency = 0.65,             -- 0 = invisible, 1 = solid
-    ShowHitbox = true,                     -- Show the red hitbox
+local cfg = {
+    -- Hitbox
+    HitboxEnabled = true,
+    HitboxSize = 14,
+    HitboxColor = Color3.fromRGB(255, 50, 50),
+    HitboxTransparency = 0.6,
 
-    KillAura = true,                       -- Auto attack when in range
-    AuraRange = 22,                        -- How close to attack
-    AttackSpeed = 0.12,                    -- Lower = faster attacks
+    -- ESP
+    ESPEnabled = true,
+    ESPColor = Color3.fromRGB(0, 255, 128),
+    ShowName = true,
+    ShowDistance = true,
+    ShowBox = true,
+    MaxESPDistance = 800,
+
+    -- Speed
+    SpeedEnabled = false,
+    SpeedMultiplier = 1.8,
+
+    MenuKey = Enum.KeyCode.RightShift,
 }
 
 local TargetNames = {
-    "UndeadGuest",
-    "UndeadNoob",
-    "UndeadNinja",
-    "UndeadPirate",
-    "Zombie",
-    "Irradiator"
+    "UndeadGuest", "UndeadNoob", "UndeadNinja",
+    "UndeadPirate", "Zombie", "Irradiator"
 }
 
---================ HITBOX EXPANDER ================
-local function expandHitbox(model)
-    if not model or not model:FindFirstChild("HumanoidRootPart") then return end
-    if model:FindFirstChild("NexusHitbox") then return end
+--================ OPTIMIZED TARGET CACHE ================
+local targets = {}          -- [model] = {hrp, hum, hitbox}
+local lastScan = 0
+local SCAN_INTERVAL = 1.25
 
-    local hrp = model.HumanoidRootPart
+local function isTarget(name)
+    for _, n in ipairs(TargetNames) do
+        if name == n or name:find(n) then return true end
+    end
+    return false
+end
+
+local function createHitbox(model, hrp)
+    if model:FindFirstChild("NexusHitbox") then return model.NexusHitbox end
 
     local hitbox = Instance.new("Part")
     hitbox.Name = "NexusHitbox"
-    hitbox.Size = Settings.HitboxSize
-    hitbox.Transparency = Settings.ShowHitbox and Settings.HitboxTransparency or 1
+    hitbox.Anchored = false
     hitbox.CanCollide = false
     hitbox.Massless = true
-    hitbox.Anchored = false
-    hitbox.Color = Color3.fromRGB(255, 40, 40)
     hitbox.Material = Enum.Material.ForceField
     hitbox.Parent = model
 
@@ -47,53 +64,350 @@ local function expandHitbox(model)
     weld.Part0 = hrp
     weld.Part1 = hitbox
     weld.Parent = hitbox
+
+    return hitbox
 end
 
-task.spawn(function()
-    while true do
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") then
-                for _, name in ipairs(TargetNames) do
-                    if obj.Name == name or obj.Name:find(name) then
-                        expandHitbox(obj)
-                        break
-                    end
-                end
+local function scanTargets()
+    local found = {}
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and isTarget(obj.Name) then
+            local hrp = obj:FindFirstChild("HumanoidRootPart")
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                found[obj] = {
+                    hrp = hrp,
+                    hum = hum,
+                    hitbox = obj:FindFirstChild("NexusHitbox")
+                }
             end
         end
-        task.wait(1.2)
+    end
+
+    -- Remove old
+    for model in pairs(targets) do
+        if not found[model] then
+            local old = model:FindFirstChild("NexusHitbox")
+            if old then old:Destroy() end
+            targets[model] = nil
+        end
+    end
+
+    targets = found
+end
+
+--================ ESP DRAWINGS ================
+local drawings = {}  -- [model] = {box, name, dist}
+
+local function getDrawing(model)
+    if drawings[model] then return drawings[model] end
+
+    local t = {
+        box  = Drawing.new("Square"),
+        name = Drawing.new("Text"),
+        dist = Drawing.new("Text"),
+    }
+
+    t.box.Thickness = 1.2
+    t.box.Filled = false
+    t.box.Visible = false
+
+    t.name.Center = true
+    t.name.Outline = true
+    t.name.Size = 14
+    t.name.Visible = false
+
+    t.dist.Center = true
+    t.dist.Outline = true
+    t.dist.Size = 12
+    t.dist.Visible = false
+
+    drawings[model] = t
+    return t
+end
+
+local function hideDrawing(t)
+    if not t then return end
+    t.box.Visible = false
+    t.name.Visible = false
+    t.dist.Visible = false
+end
+
+local function destroyDrawing(model)
+    local t = drawings[model]
+    if not t then return end
+    pcall(function() t.box:Remove() end)
+    pcall(function() t.name:Remove() end)
+    pcall(function() t.dist:Remove() end)
+    drawings[model] = nil
+end
+
+--================ MAIN LOOP ================
+local myHRP, myHum
+local speedConn
+
+local function updateSpeed()
+    if speedConn then speedConn:Disconnect() speedConn = nil end
+    if not cfg.SpeedEnabled then return end
+
+    speedConn = RunService.Heartbeat:Connect(function()
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 16 * cfg.SpeedMultiplier
+        end
+    end)
+end
+
+RunService.Heartbeat:Connect(function()
+    -- Cache character
+    local char = LP.Character
+    myHRP = char and char:FindFirstChild("HumanoidRootPart")
+    myHum = char and char:FindFirstChildOfClass("Humanoid")
+
+    -- Scan targets every interval
+    if tick() - lastScan > SCAN_INTERVAL then
+        lastScan = tick()
+        scanTargets()
+    end
+
+    local camPos = Camera.CFrame.Position
+
+    for model, data in pairs(targets) do
+        local hrp = data.hrp
+        local hum = data.hum
+
+        if not hrp or not hrp.Parent or not hum or hum.Health <= 0 then
+            destroyDrawing(model)
+            targets[model] = nil
+            continue
+        end
+
+        --====== HITBOX ======
+        if cfg.HitboxEnabled then
+            local hitbox = data.hitbox or createHitbox(model, hrp)
+            data.hitbox = hitbox
+
+            local size = cfg.HitboxSize
+            hitbox.Size = Vector3.new(size, size, size)
+            hitbox.Color = cfg.HitboxColor
+            hitbox.Transparency = cfg.HitboxTransparency
+        else
+            if data.hitbox then
+                data.hitbox:Destroy()
+                data.hitbox = nil
+            end
+        end
+
+        --====== ESP ======
+        if cfg.ESPEnabled and myHRP then
+            local dist = (myHRP.Position - hrp.Position).Magnitude
+            if dist > cfg.MaxESPDistance then
+                hideDrawing(drawings[model])
+                continue
+            end
+
+            local sp, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if not onScreen or sp.Z < 0 then
+                hideDrawing(drawings[model])
+                continue
+            end
+
+            local t = getDrawing(model)
+            local col = cfg.ESPColor
+
+            -- Box
+            if cfg.ShowBox then
+                local scale = 60 / sp.Z
+                local w = 28 * scale
+                local h = 42 * scale
+                t.box.Size = Vector2.new(w, h)
+                t.box.Position = Vector2.new(sp.X - w/2, sp.Y - h/2)
+                t.box.Color = col
+                t.box.Visible = true
+            else
+                t.box.Visible = false
+            end
+
+            -- Name
+            if cfg.ShowName then
+                t.name.Text = model.Name
+                t.name.Position = Vector2.new(sp.X, sp.Y - 28)
+                t.name.Color = col
+                t.name.Visible = true
+            else
+                t.name.Visible = false
+            end
+
+            -- Distance
+            if cfg.ShowDistance then
+                t.dist.Text = math.floor(dist) .. "m"
+                t.dist.Position = Vector2.new(sp.X, sp.Y + 18)
+                t.dist.Color = Color3.fromRGB(200, 200, 210)
+                t.dist.Visible = true
+            else
+                t.dist.Visible = false
+            end
+        else
+            hideDrawing(drawings[model])
+        end
     end
 end)
 
---================ KILL AURA (No walking) ================
-task.spawn(function()
-    while true do
-        if Settings.KillAura then
-            local myChar = LP.Character
-            local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
-            local tool = myChar and myChar:FindFirstChildOfClass("Tool")
+--================ GUI ================
+local gui = Instance.new("ScreenGui")
+gui.Name = "NexusUndead"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() gui.Parent = game:GetService("CoreGui") end)
+if not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
 
-            if myHRP and tool then
-                for _, obj in ipairs(workspace:GetDescendants()) do
-                    if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
-                        for _, name in ipairs(TargetNames) do
-                            if (obj.Name == name or obj.Name:find(name)) then
-                                local hum = obj:FindFirstChildOfClass("Humanoid")
-                                if hum and hum.Health > 0 then
-                                    local dist = (myHRP.Position - obj.HumanoidRootPart.Position).Magnitude
-                                    if dist <= Settings.AuraRange then
-                                        tool:Activate()
-                                    end
-                                end
-                                break
-                            end
-                        end
-                    end
-                end
-            end
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 280, 0, 420)
+frame.Position = UDim2.new(0.5, -140, 0.5, -210)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 36)
+title.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+title.BorderSizePixel = 0
+title.Text = "  Undead Control"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 10)
+titleCorner.Parent = title
+
+local function createToggle(text, y, default, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -20, 0, 32)
+    btn.Position = UDim2.new(0, 10, 0, y)
+    btn.BackgroundColor3 = default and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(50, 50, 60)
+    btn.Text = text .. (default and "  [ON]" or "  [OFF]")
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 13
+    btn.Parent = frame
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
+
+    local state = default
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(50, 50, 60)
+        btn.Text = text .. (state and "  [ON]" or "  [OFF]")
+        callback(state)
+    end)
+end
+
+local function createSlider(text, y, min, max, default, callback)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 20)
+    label.Position = UDim2.new(0, 10, 0, y)
+    label.BackgroundTransparency = 1
+    label.Text = text .. ": " .. default
+    label.TextColor3 = Color3.fromRGB(220, 220, 230)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, -20, 0, 8)
+    bar.Position = UDim2.new(0, 10, 0, y + 22)
+    bar.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    bar.BorderSizePixel = 0
+    bar.Parent = frame
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new((default-min)/(max-min), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(100, 80, 255)
+    fill.BorderSizePixel = 0
+    fill.Parent = bar
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 14, 0, 14)
+    knob.Position = UDim2.new((default-min)/(max-min), -7, 0.5, -7)
+    knob.BackgroundColor3 = Color3.new(1,1,1)
+    knob.BorderSizePixel = 0
+    knob.Parent = bar
+
+    local dragging = false
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
         end
-        task.wait(Settings.AttackSpeed)
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local rel = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+            local val = math.floor(min + (max - min) * rel)
+            fill.Size = UDim2.new(rel, 0, 1, 0)
+            knob.Position = UDim2.new(rel, -7, 0.5, -7)
+            label.Text = text .. ": " .. val
+            callback(val)
+        end
+    end)
+end
+
+-- Build GUI
+createToggle("Hitbox Enabled", 50, cfg.HitboxEnabled, function(v) cfg.HitboxEnabled = v end)
+createSlider("Hitbox Size", 90, 6, 30, cfg.HitboxSize, function(v) cfg.HitboxSize = v end)
+
+createToggle("ESP Enabled", 140, cfg.ESPEnabled, function(v) cfg.ESPEnabled = v end)
+createToggle("Show Box", 180, cfg.ShowBox, function(v) cfg.ShowBox = v end)
+createToggle("Show Name", 220, cfg.ShowName, function(v) cfg.ShowName = v end)
+createToggle("Show Distance", 260, cfg.ShowDistance, function(v) cfg.ShowDistance = v end)
+
+createToggle("Speed Enabled", 310, cfg.SpeedEnabled, function(v)
+    cfg.SpeedEnabled = v
+    updateSpeed()
+end)
+createSlider("Speed Multiplier", 350, 1, 4, cfg.SpeedMultiplier * 10, function(v)
+    cfg.SpeedMultiplier = v / 10
+    updateSpeed()
+end)
+
+-- Close button
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 30, 0, 30)
+close.Position = UDim2.new(1, -35, 0, 3)
+close.BackgroundTransparency = 1
+close.Text = "×"
+close.TextColor3 = Color3.new(1,1,1)
+close.Font = Enum.Font.GothamBold
+close.TextSize = 20
+close.Parent = frame
+close.MouseButton1Click:Connect(function()
+    frame.Visible = false
+end)
+
+-- Toggle menu
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == cfg.MenuKey then
+        frame.Visible = not frame.Visible
     end
 end)
 
-print("[NEXUS] Hitbox Expander + Kill Aura loaded (no walking)")
+print("[NEXUS] Undead Hitbox + ESP + Speed loaded | RightShift = Menu")
