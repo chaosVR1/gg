@@ -1,0 +1,142 @@
+--// ═══════════════════════════════════════════════════
+--//   Undead Hitbox Expander + Auto Farm
+--// ═══════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LP = Players.LocalPlayer
+
+--================ SETTINGS ================
+local Settings = {
+    HitboxSize = Vector3.new(12, 12, 12),   -- How big the hitbox becomes
+    HitboxTransparency = 0.7,              -- 0 = invisible, 1 = fully visible
+    ShowHitbox = true,                     -- See the expanded hitbox
+
+    AutoFarm = true,                       -- Turn auto farm on/off
+    AttackRange = 18,                      -- How close to get before attacking
+    FarmSpeed = 0.15,                      -- Lower = faster attacks
+}
+
+-- Names of the NPCs we want to target
+local TargetNames = {
+    "UndeadGuest",
+    "UndeadNoob",
+    "UndeadNinja",
+    "UndeadPirate",
+    "Zombie",
+    "Irradiator"
+}
+
+--================ HITBOX EXPANDER ================
+local function expandHitbox(model)
+    if not model or not model:FindFirstChild("HumanoidRootPart") then return end
+    if model:FindFirstChild("NexusHitbox") then return end -- already expanded
+
+    local hrp = model.HumanoidRootPart
+
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "NexusHitbox"
+    hitbox.Size = Settings.HitboxSize
+    hitbox.Transparency = Settings.ShowHitbox and Settings.HitboxTransparency or 1
+    hitbox.CanCollide = false
+    hitbox.Massless = true
+    hitbox.Anchored = false
+    hitbox.Color = Color3.fromRGB(255, 50, 50)
+    hitbox.Material = Enum.Material.ForceField
+    hitbox.Parent = model
+
+    local weld = Instance.new("Weld")
+    weld.Part0 = hrp
+    weld.Part1 = hitbox
+    weld.C0 = CFrame.new(0, 0, 0)
+    weld.Parent = hitbox
+end
+
+local function scanAndExpand()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") then
+            for _, name in ipairs(TargetNames) do
+                if obj.Name == name or obj.Name:find(name) then
+                    expandHitbox(obj)
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- Keep expanding new NPCs that spawn
+task.spawn(function()
+    while true do
+        scanAndExpand()
+        task.wait(1.5)
+    end
+end)
+
+--================ AUTO FARM ================
+local function getClosestTarget()
+    local closest = nil
+    local shortest = Settings.AttackRange + 50
+    local myChar = LP.Character
+    local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") then
+            for _, name in ipairs(TargetNames) do
+                if (obj.Name == name or obj.Name:find(name)) and obj:FindFirstChild("HumanoidRootPart") then
+                    local hum = obj:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local dist = (myHRP.Position - obj.HumanoidRootPart.Position).Magnitude
+                        if dist < shortest then
+                            shortest = dist
+                            closest = obj
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function attackTarget(target)
+    local myChar = LP.Character
+    if not myChar then return end
+    local tool = myChar:FindFirstChildOfClass("Tool")
+    if tool then
+        tool:Activate()
+    end
+end
+
+-- Auto Farm Loop
+task.spawn(function()
+    while true do
+        if Settings.AutoFarm then
+            local target = getClosestTarget()
+            if target and target:FindFirstChild("HumanoidRootPart") then
+                local myChar = LP.Character
+                local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+
+                if myHRP and myHum then
+                    local dist = (myHRP.Position - target.HumanoidRootPart.Position).Magnitude
+
+                    -- Walk to target
+                    if dist > Settings.AttackRange then
+                        myHum:MoveTo(target.HumanoidRootPart.Position)
+                    else
+                        -- Attack
+                        attackTarget(target)
+                    end
+                end
+            end
+        end
+        task.wait(Settings.FarmSpeed)
+    end
+end)
+
+print("[NEXUS] Undead Hitbox Expander + Auto Farm loaded")
+print("Hitbox Size:", Settings.HitboxSize)
+print("AutoFarm:", Settings.AutoFarm)
